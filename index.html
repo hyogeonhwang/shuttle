@@ -241,7 +241,7 @@ button{cursor:pointer;font-family:inherit}
 .sti{display:flex;align-items:center;padding:5px 8px;border-radius:7px;margin-bottom:2px;cursor:pointer;gap:6px;border:1.5px solid transparent;transition:all .1s}
 .sti:hover{background:#f0f4ff;border-color:#c7d2fe}
 .sti.absent{background:#fef2f2;border-color:#fecaca}
-.sti.absent .stn{text-decoration:line-through;color:#dc2626}
+.sti.absent .stn{text-decoration:line-through double #dc2626;color:#9ca3af}
 .sti.individual{background:#f9fafb}
 .sti.individual .stn{text-decoration:line-through;color:#9ca3af}
 .sti.tout{background:#f9fafb}
@@ -249,7 +249,7 @@ button{cursor:pointer;font-family:inherit}
 .sti.tin{background:#eff6ff;border-color:#93c5fd}
 .sti.stopchg{background:#fffbeb;border-color:#fcd34d}
 .sti.period_absent{background:#fef2f2;border-color:#fecaca}
-.sti.period_absent .stn{text-decoration:line-through;color:#9ca3af}
+.sti.period_absent .stn{text-decoration:line-through double #dc2626;color:#9ca3af}
 .stn{font-weight:700;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#111827}
 .sc{font-size:10px;color:#9ca3af;flex-shrink:0;background:#f3f4f6;padding:1px 5px;border-radius:4px}
 .pin{font-size:9px;padding:2px 6px;border-radius:7px;font-weight:800;flex-shrink:0}
@@ -815,6 +815,21 @@ function initDB(){
         render();
         showChangeBanner(); // 상단 배너 알림
       });
+
+      // students 실시간 리스닝 (신규 학생 등록 등 감지)
+      const stuRef=_fbDb.ref('shuttle_v4/students');
+      stuRef.on('value', snap=>{
+        if(Date.now() < _fbIgnoreUntil) return;
+        const newStus=snap.val();
+        if(!newStus) return;
+        const prevJson=JSON.stringify(S.db.students||[]);
+        const newJson=JSON.stringify(newStus);
+        if(prevJson===newJson) return;
+        S.db.students=newStus;
+        localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+        render();
+        showChangeBanner();
+      });
     }).catch(e=>{
       console.warn('Firebase 로드 실패, localStorage 사용:', e);
       const saved = localStorage.getItem(DB_KEY);
@@ -1321,7 +1336,17 @@ function validateTransfer(toRouteId,currentStop){
 
 function countTodayChanges(date){
   const dk=getDK(date);
-  const direct=getDayChanges(date).filter(c=>!c.undone).length;
+  // 결석(absent)은 같은 학생의 등원+하원이 각각 등록돼도 1건으로 카운트
+  const directAll=getDayChanges(date).filter(c=>!c.undone);
+  const absentSeen=new Set();
+  const direct=directAll.filter(c=>{
+    if(c.type==='absent'){
+      if(absentSeen.has(c.studentId))return false;
+      absentSeen.add(c.studentId);
+      return true;
+    }
+    return true;
+  }).length;
   const periodCount=Object.entries(S.db.dailyChanges||{}).reduce((cnt,[d,arr])=>{
     if(d===date)return cnt;
     return cnt+arr.filter(c=>{
@@ -1432,7 +1457,6 @@ function buildApp(){
     ${chgCnt>0?`<span class="chg-chip">🔔 변경 ${chgCnt}건</span>`:''}
     ${adminMode?`<span style="background:#fee2e2;color:#dc2626;font-size:10px;font-weight:900;padding:3px 10px;border-radius:10px;border:1px solid #fca5a5;letter-spacing:.3px">🔓 관리자</span>`:''}
     <div class="tb-right">
-      ${S.lastChange?`<button class="btn btn-warn btn-sm" onclick="undoLastChange()">↩ 되돌리기</button>`:''}
       <button class="btn btn-sec btn-sm" onclick="window.print()">🖨️</button>
       ${tab!=='settings'&&tab!=='students'?`<button class="btn btn-pr btn-sm" onclick="openChangeModal(null,null)">✚ 변경등록</button>`:''}
     </div>
@@ -1468,7 +1492,6 @@ function buildApp(){
       style="border:none;background:rgba(255,255,255,.18);color:#fff;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:15px;font-weight:900;font-family:inherit;line-height:1;flex-shrink:0">›</button>
   </div>
   <div style="display:flex;gap:5px;align-items:center;flex-shrink:0">
-    ${S.lastChange?`<button class="btn btn-warn btn-sm" onclick="undoLastChange()">↩</button>`:''}
     ${adminMode?`<button onclick="toggleAdmin()" style="border:1.5px solid rgba(255,255,255,.4);background:transparent;color:#fff;border-radius:6px;padding:4px 9px;cursor:pointer;font-size:10px;font-weight:700;font-family:inherit">종료</button>`:''}
     ${tab!=='settings'&&tab!=='students'?`<button class="btn btn-pr btn-sm" onclick="openChangeModal(null,null)">+변경</button>`:''}
   </div>
@@ -1667,7 +1690,7 @@ function buildTeacherView(date,dk,wd){
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
       <div style="text-align:right">
-        <div style="font-size:20px;font-weight:900;color:${rCol}">${sts.length}명</div>
+        ${(()=>{const boardCnt=sts.filter(s=>s.state==='normal'||s.state==='stopchg'||s.state==='tin').length;return `<div style="font-size:20px;font-weight:900;color:${rCol}">${boardCnt}명</div>${boardCnt!==sts.length?`<div style="font-size:10px;color:#9ca3af">전체 ${sts.length}명</div>`:''}`})()}
         ${changed.length>0?`<div style="font-size:10px;font-weight:700;color:var(--danger)">변경 ${changed.length}명</div>`:''}
       </div>
       <span style="font-size:14px;color:${rCol}">${isOpen?'▲':'▼'}</span>
@@ -1700,7 +1723,7 @@ function buildTeacherView(date,dk,wd){
           <span style="font-size:11px;font-weight:700;color:${cl};background:${cl}22;padding:2px 8px;border-radius:8px">${st}</span>
           ${periodDateStr?`<span style="font-size:9px;font-weight:700;color:${cl};text-align:center">${periodDateStr}</span>`:''}
         </div>
-        <span style="font-size:12px;font-weight:700;text-decoration:${s.state==='absent'||s.state==='period_absent'?'line-through':'none'}">${esc(s.name)}</span>
+        <span style="font-size:12px;font-weight:700;${s.state==='absent'||s.state==='period_absent'?'text-decoration:line-through double #dc2626;color:#9ca3af':''};">${esc(s.name)}</span>
         ${s.cls?`<span style="font-size:10px;color:#9ca3af">${esc(s.cls)}</span>`:''}
         ${s.sched?.stop?`<span style="font-size:10px;color:#6b7280">→ ${esc(s.sched.stop)}</span>`:''}
         ${s.chg?.notes?`<span style="font-size:10px;color:#9ca3af">(${esc(s.chg.notes)})</span>`:''}
@@ -1724,7 +1747,7 @@ function buildTeacherView(date,dk,wd){
         const isFixedInd=s.isFixedOverride&&isIndividual;
         const isCrossed=isAbsent||isIndividual; // 개별하원(고정 포함)도 취소선 표시
         return `<div onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;background:${isAbsent?'#fef2f2':isIndividual?'#f5f3ff':s.state==='tin'?'#eff6ff':''};margin-bottom:2px;cursor:pointer;user-select:none;-webkit-user-select:none" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
-          <span style="font-size:13px;font-weight:900;${isAbsent?'text-decoration:line-through;color:#dc2626':isIndividual?'text-decoration:line-through;color:#9ca3af':'color:#1f2937'}">${esc(s.name)}</span>
+          <span style="font-size:13px;font-weight:900;${isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndividual?'text-decoration:line-through;color:#9ca3af':'color:#1f2937'}">${esc(s.name)}</span>
           ${s.cls?`<span style="font-size:10px;color:#d1d5db">${esc(s.cls)}</span>`:''}
           ${s.phone?`<a href="tel:${s.phone}" onclick="event.stopPropagation()" style="font-size:10px;color:var(--pr);margin-left:auto">${esc(s.phone)}</a>`:''}
           ${isAbsent&&s.state==='period_absent'?`<span style="font-size:9px;font-weight:800;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:6px">기간결석${s.chg?.startDate?` ${s.chg.startDate.slice(5).replace('-','/')}~${(s.chg.endDate||s.chg.startDate).slice(5).replace('-','/')}`:''}</span>`:''} 
@@ -1751,12 +1774,6 @@ function buildTeacherView(date,dk,wd){
     <button class="btn btn-sec btn-sm" onclick="window.print()">🖨️ 인쇄</button>
   </div>
 </div>
-${S.lastChange?`<div class="undo-bar">⚡ 방금 등록: <strong>${S.lastChange.desc}</strong>
-  <div style="display:flex;gap:5px;margin-left:auto">
-    <button class="btn btn-xs" style="background:#fff;color:var(--pr);border:1px solid var(--pr)" onclick="editChangeEntry('${S.date}','${S.lastChange.id}')">✏️수정</button>
-    <button class="btn btn-xs" style="background:#fff;color:#92400e" onclick="undoLastChange()">↩취소</button>
-  </div>
-</div>`:''}
 ${noRoutes?`<div class="card"><div class="card-body" style="text-align:center;padding:30px;color:#9ca3af;font-size:12px">
   오늘(${DAY_KO[dk]}요일) 운행 배정 노선이 없습니다
 </div></div>`:routeCards}
@@ -1840,7 +1857,26 @@ function showTodayChangesPopup(date, filterChgId){
   let chgs=[...direct,...periodFromOther];
   // 최신 등록 순서로 정렬 (나중 등록이 위에)
   chgs.sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
-  if(filterChgId) chgs=chgs.filter(c=>c.id===filterChgId);
+  if(filterChgId){
+    // 특정 변경건 클릭 시: dedup 없이 해당 건만 표시
+    chgs=chgs.filter(c=>c.id===filterChgId);
+  } else {
+    // 전체 목록 표시 시: 결석은 학생당 1건으로 병합
+    const absentSeen=new Set();
+    chgs=chgs.filter(c=>{
+      if(c.type==='absent'){
+        if(absentSeen.has(c.studentId))return false;
+        absentSeen.add(c.studentId);
+        return true;
+      }
+      return true;
+    });
+    // 병합된 absent는 routeId를 'all'로 표시
+    chgs=chgs.map(c=>{
+      if(c.type==='absent')return Object.assign({},c,{routeId:'all'});
+      return c;
+    });
+  }
   if(!chgs.length)return;
   const typeKO={absent:'결석',individual:'개별등하원',individual_both:'개별 등하원',individual_morning:'개별 등원',individual_afternoon:'개별 하원',period_individual:'개별등하원(기간)',bus_change:'호차변경',stop_change:'정류장변경',period_absent:'결석기간'};
   const typeIcon={absent:'🚫',individual:'🚶',individual_both:'🚶',individual_morning:'🌅',individual_afternoon:'🌇',bus_change:'🔄',stop_change:'📍',period_absent:'📅'};
@@ -1962,6 +1998,7 @@ function showTodayChangesPopup(date, filterChgId){
       const targetDate=btn.dataset.date||date;
       const arr=getDayChanges(targetDate).map(c=>c.id===cid?{...c,undone:true}:c);
       setDayChanges(targetDate,arr);
+      if(S.lastChange&&S.lastChange.id===cid)S.lastChange=null;
       showToast('↩ 변경 취소 완료');
       document.body.removeChild(overlay);
       render();
@@ -1986,6 +2023,7 @@ function showTodayChangesPopup(date, filterChgId){
       const targetDate=btn.dataset.date||date;
       const arr=getDayChanges(targetDate).filter(c=>c.id!==cid);
       setDayChanges(targetDate,arr);
+      if(S.lastChange&&S.lastChange.id===cid)S.lastChange=null;
       showToast('🗑️ 변경내역 삭제됨');
       document.body.removeChild(overlay);
       render();
@@ -2094,10 +2132,13 @@ function buildSti(s,date){
   const curTime=s.sched?.pickupTime||'';
   // isFixedOverride(요일예외 고정설정)는 변경 핀 미표시, 취소선은 표시
   const displayState=s.isFixedOverride?'normal':state;
-  const isCrossed=state==='absent'||state==='period_absent'||state==='individual';
+  const isAbsentState=state==='absent'||state==='period_absent';
+  const isIndivState=state==='individual';
+  const isCrossed=isAbsentState||isIndivState;
+  const crossStyle=isAbsentState?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndivState?'text-decoration:line-through;color:#9ca3af':'';
   return `<div class="sti ${clsMap[displayState]||''}" data-name="${esc(s.name)}" onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:5px;padding:5px 8px;user-select:none;-webkit-user-select:none">
   ${schDot}
-  <span class="stn" style="flex:1;${isCrossed?'text-decoration:line-through;color:#9ca3af':''}">${esc(s.name)}</span>
+  <span class="stn" style="flex:1;${crossStyle}">${esc(s.name)}</span>
   ${s.cls?`<span class="sc">${esc(s.cls)}</span>`:''}
   ${s.isFixedOverride?`<span class="pin" style="background:#e0e7ff;color:#3730a3;font-size:9px">개별</span>`:(pinMap[state]||'')}
   ${curTime?`<span style="font-size:10px;color:#9ca3af;flex-shrink:0">${curTime}</span>`:''}
@@ -2168,7 +2209,7 @@ function buildRoutes(date,dk){
 function buildStudents(){
   const q=(S.studentSearch||'').toLowerCase();
   const sfil=S.schoolFilter;
-  const stuTab=S._stuTab||'all'; // 'all' | 'unset' | 'withdraw'
+  const stuTab=S._stuTab||'all'; // 'all' | 'unset' | 'individual' | 'withdraw'
   const clsFil=S._stuClsFilter||'';
 
   // 반 목록
@@ -2197,14 +2238,24 @@ function buildStudents(){
     return !hasSched;
   }
 
+  // 개별등하원 판별: default 등원·하원 둘 다 __individual__ (셔틀 완전 미이용)
+  function isIndividualStudent(s){
+    if(!s.active)return false;
+    const def=s.daySchedules?.default;
+    if(!def)return false;
+    return def.morning?.routeId==='__individual__' && def.afternoon?.routeId==='__individual__';
+  }
+
   const allActive=S.db.students.filter(s=>s.active&&(sfil==='all'||s.school===sfil)&&(!clsFil||s.cls===clsFil));
   const allInactive=S.db.students.filter(s=>!s.active&&(sfil==='all'||s.school===sfil)&&(!clsFil||s.cls===clsFil));
   const unsetCnt=allActive.filter(s=>hasNoSched(s)).length;
+  const individualCnt=allActive.filter(s=>isIndividualStudent(s)).length;
   const withdrawCnt=allInactive.length;
 
   let list=[];
   if(stuTab==='all') list=allActive;
   else if(stuTab==='unset') list=allActive.filter(s=>hasNoSched(s));
+  else if(stuTab==='individual') list=allActive.filter(s=>isIndividualStudent(s));
   else if(stuTab==='withdraw') list=allInactive;
 
   const am=S.adminMode;
@@ -2227,7 +2278,7 @@ function buildStudents(){
       </div>
     </div>`:''}
 
-    <!-- 전체/미설정/퇴원 탭 -->
+    <!-- 전체/미설정/개별/퇴원 탭 -->
     <div style="display:flex;gap:0;margin-bottom:12px;border-bottom:2px solid var(--border)">
       <div onclick="S._stuTab='all';S.studentSearch='';render()"
         style="padding:7px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${stuTab==='all'?'var(--pr)':'transparent'};color:${stuTab==='all'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">
@@ -2236,6 +2287,10 @@ function buildStudents(){
       <div onclick="S._stuTab='unset';S.studentSearch='';render()"
         style="padding:7px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${stuTab==='unset'?'#ef4444':'transparent'};color:${stuTab==='unset'?'#ef4444':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">
         탑승 미설정 ${unsetCnt>0?`<span style="background:#ef4444;color:#fff;border-radius:10px;padding:0 6px;font-size:10px;margin-left:4px">${unsetCnt}</span>`:''}
+      </div>
+      <div onclick="S._stuTab='individual';S.studentSearch='';render()"
+        style="padding:7px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${stuTab==='individual'?'#7c3aed':'transparent'};color:${stuTab==='individual'?'#7c3aed':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">
+        개별등하원 ${individualCnt>0?`<span style="background:#7c3aed;color:#fff;border-radius:10px;padding:0 6px;font-size:10px;margin-left:4px">${individualCnt}</span>`:''}
       </div>
       <div onclick="S._stuTab='withdraw';S.studentSearch='';render()"
         style="padding:7px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${stuTab==='withdraw'?'#6b7280':'transparent'};color:${stuTab==='withdraw'?'#374151':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">
@@ -2255,7 +2310,7 @@ function buildStudents(){
         style="border:none;background:#fee2e2;color:#dc2626;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">✕ 필터해제</button>`:''}
     </div>
 
-    ${list.length===0?`<div class="empty">${stuTab==='unset'?'🎉 탑승 미설정 학생이 없습니다':stuTab==='withdraw'?'퇴원 학생이 없습니다':'검색 결과가 없습니다'}</div>`:`
+    ${list.length===0?`<div class="empty">${stuTab==='unset'?'🎉 탑승 미설정 학생이 없습니다':stuTab==='withdraw'?'퇴원 학생이 없습니다':stuTab==='individual'?'개별등하원 학생이 없습니다':'검색 결과가 없습니다'}</div>`:`
     <div class="tbl-wrap"><table>
       <thead><tr>
         <th>이름</th>
@@ -2378,12 +2433,6 @@ function buildChanges(date){
     <button class="btn btn-pr btn-sm" onclick="openChangeModal(null,null)">✚ 변경등록</button>
   </div>
   <div class="card-body">
-    ${S.lastChange?`<div class="undo-bar">⚡ 방금 등록: <strong>${S.lastChange.desc}</strong>
-      <div style="display:flex;gap:5px;margin-left:auto">
-        <button class="btn btn-xs" style="background:#fff;color:var(--pr);border:1px solid var(--pr)" onclick="editChangeEntry('${S.date}','${S.lastChange.id}')">✏️수정</button>
-        <button class="btn btn-xs" style="background:#fff;color:#92400e" onclick="undoLastChange()">↩취소</button>
-      </div>
-    </div>`:''}
     ${allActive.length===0?`<div class="empty">변경된 내역이 없습니다</div>`:allActive.map(c=>buildChgRow(c,!c._fromDate)).join('')}
     ${periodFromOther.length>0?`<div style="font-size:10px;color:#9ca3af;margin-top:8px;padding-top:8px;border-top:1px solid #f0f2f7">📅 기간 예약 변경 ${periodFromOther.length}건 포함</div>`:''}
     ${undone.length>0?`<div style="font-size:11px;color:#9ca3af;margin-top:14px;margin-bottom:7px">── 취소된 변경 (${undone.length}건) ──</div>${undone.map(c=>buildChgRow(c,false)).join('')}`:''}
@@ -4514,25 +4563,6 @@ function buildTeacherModal(d){
     </div>`;
   }).join('')}
 
-  <!-- 선택된 노선 순서 조정 -->
-  <div style="font-size:10px;font-weight:900;color:#6b7280;margin-top:10px;margin-bottom:6px">📋 교사뷰 표시 순서 (위아래로 조정)</div>
-  <div id="tc_order_list" style="display:flex;flex-direction:column;gap:4px">
-    ${(()=>{
-      const ordered=t.routes||[];
-      const allRoutes=INIT_BUSES.flatMap(b=>getBusRoutes(b.id));
-      return ordered.map((rid,i)=>{
-        const r=allRoutes.find(x=>x.id===rid);
-        if(!r)return '';
-        const col=BUS_COLORS[r.busId]||'#555';
-        return `<div id="tc_ord_${rid}" data-rid="${rid}" style="display:flex;align-items:center;gap:6px;padding:5px 9px;border:1.5px solid #e5e7eb;border-radius:7px;background:#fff">
-          <span style="background:${col};color:#fff;font-size:9px;font-weight:800;padding:1px 7px;border-radius:5px">${r.busId}호</span>
-          <span style="flex:1;font-size:11px;font-weight:700;color:#374151">${getRouteLabel(rid)}</span>
-          <button onclick="tcOrderMove('${rid}',-1)" style="border:none;background:#f3f4f6;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:13px" title="위로">▲</button>
-          <button onclick="tcOrderMove('${rid}',1)" style="border:none;background:#f3f4f6;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:13px" title="아래로">▼</button>
-        </div>`;
-      }).filter(Boolean).join('');
-    })()}
-  </div>
   <div class="btn-row" style="margin-top:10px">
     <button class="btn btn-pr" onclick="saveTeacher('${t.id}',${isNew})">💾 저장</button>
     <button class="btn btn-sec" onclick="closeModal()">취소</button>
@@ -4766,6 +4796,7 @@ function setTab(t){
   S._stopSrch='';
   S._stuTab='all';
   S.selectedTeacher='';
+  S.lastChange=null;
   render();
 }
 function setDate(v){S.date=v;S.lastChange=null;render()}
@@ -5189,6 +5220,7 @@ function deleteChangeEntry(date,cid){
   if(!confirm('이 변경내역을 완전히 삭제하시겠습니까?'))return;
   const arr=getDayChanges(date).filter(c=>c.id!==cid);
   setDayChanges(date,arr);
+  if(S.lastChange&&S.lastChange.id===cid)S.lastChange=null;
   showToast('🗑️ 변경내역 삭제됨');
   render();
 }
