@@ -1515,7 +1515,7 @@ function buildBusRouteRows(busRoutes,date,sfil){
     const routeTime=getRouteTime(r.id);
     const collapsed=S.routeCollapsed[r.id]||false;
     const chgCnt=sts.filter(s=>s.state!=='normal'&&!s.isFixedOverride).length;
-    const normalCnt=sts.filter(s=>s.state==='normal'||s.isFixedOverride).length;
+    const normalCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg'||s.isFixedOverride).length;
     const teachersOnRoute=getTeachersForRoute(r.id);
     parts.push(`
 <div style="border-top:2px solid #e5e7eb">
@@ -1739,15 +1739,15 @@ function buildTeacherView(date,dk,wd){
       <div style="display:flex;align-items:center;gap:6px;background:#f3f4f6;border-radius:6px;padding:4px 9px;margin-bottom:4px">
         ${grp.time?`<span style="background:var(--pr);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:8px;flex-shrink:0">${grp.time}</span>`:''}
         <span style="font-size:11px;font-weight:700;color:#374151;flex:1">${esc(grp.stop||'(정류장 미정)')}</span>
-        <span style="font-size:10px;color:#9ca3af">${grp.kids.length}명</span>
+        <span style="font-size:10px;color:#9ca3af">${grp.kids.filter(s=>s.state!=='tout').length}명</span>
       </div>
       ${grp.kids.map(s=>{
         const isAbsent=s.state==='absent'||s.state==='period_absent';
         const isIndividual=s.state==='individual';
+        const isTout=s.state==='tout';
         const isFixedInd=s.isFixedOverride&&isIndividual;
-        const isCrossed=isAbsent||isIndividual; // 개별하원(고정 포함)도 취소선 표시
-        return `<div onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;background:${isAbsent?'#fef2f2':isIndividual?'#f5f3ff':s.state==='tin'?'#eff6ff':''};margin-bottom:2px;cursor:pointer;user-select:none;-webkit-user-select:none" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
-          <span style="font-size:13px;font-weight:900;${isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndividual?'text-decoration:line-through;color:#9ca3af':'color:#1f2937'}">${esc(s.name)}</span>
+        return `<div onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;background:${isAbsent?'#fef2f2':isIndividual?'#f5f3ff':isTout?'#f9fafb':s.state==='tin'?'#eff6ff':''};margin-bottom:2px;cursor:pointer;user-select:none;-webkit-user-select:none" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
+          <span style="font-size:13px;font-weight:900;${isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndividual||isTout?'text-decoration:line-through;color:#9ca3af':'color:#1f2937'}">${esc(s.name)}</span>
           ${s.cls?`<span style="font-size:10px;color:#d1d5db">${esc(s.cls)}</span>`:''}
           ${s.phone?`<a href="tel:${s.phone}" onclick="event.stopPropagation()" style="font-size:10px;color:var(--pr);margin-left:auto">${esc(s.phone)}</a>`:''}
           ${isAbsent&&s.state==='period_absent'?`<span style="font-size:9px;font-weight:800;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:6px">기간결석${s.chg?.startDate?` ${s.chg.startDate.slice(5).replace('-','/')}~${(s.chg.endDate||s.chg.startDate).slice(5).replace('-','/')}`:''}</span>`:''} 
@@ -1755,6 +1755,7 @@ function buildTeacherView(date,dk,wd){
           ${isFixedInd?`<span style="font-size:9px;font-weight:800;color:#3730a3;background:#e0e7ff;padding:1px 6px;border-radius:6px">개별</span>`:''}
           ${isIndividual&&!isFixedInd?`<span style="font-size:9px;font-weight:800;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:6px">개별</span>`:''}
           ${s.state==='tin'?`<span style="font-size:9px;font-weight:800;color:#1d4ed8;background:#dbeafe;padding:1px 6px;border-radius:6px">추가</span>`:''}
+          ${isTout?`<span style="font-size:9px;font-weight:800;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:6px">호차이동</span>`:''}
         </div>`;
       }).join('')}
     </div>`).join('')}
@@ -2179,6 +2180,7 @@ function buildRoutes(date,dk){
       const rCol=r.school==='petamus'?'#7c3f00':r.school==='pangram'?'#0e7490':'var(--pr)';
       const daysStr=(r.days||[]).length===5?'월~금':(r.days||[]).map(d=>DAY_KO[d]).join('·');
       const chgCnt=sts.filter(s=>s.state!=='normal'&&!s.isFixedOverride).length;
+      const boardCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg'||s.isFixedOverride).length;
       return `<div class="route-card" style="border-color:${activeToday?rCol:'var(--border)'}">
         <div class="route-card-hdr" onclick="toggleRouteOpen('${r.id}')">
           <span class="route-badge" style="background:${rCol}">${getRouteTime(r.id)}</span>
@@ -2187,7 +2189,7 @@ function buildRoutes(date,dk){
             <div class="route-meta">${daysStr}${(()=>{const ts=getTeachersForRoute(r.id);return ts.length?` · 👤 ${ts.map(t=>t.name).join(', ')}`:'';})()}</div>
           </div>
           <div style="text-align:right;flex-shrink:0">
-            <div style="font-size:11px;font-weight:700;color:${activeToday?rCol:'#9ca3af'}">${activeToday?sts.length+'명':''}<span style="font-size:10px;color:#9ca3af">${activeToday?'':' 오늘 미운행'}</span></div>
+            <div style="font-size:11px;font-weight:700;color:${activeToday?rCol:'#9ca3af'}">${activeToday?boardCnt+'명':''}<span style="font-size:10px;color:#9ca3af">${activeToday?'':' 오늘 미운행'}</span></div>
             ${chgCnt>0?`<div style="font-size:10px;font-weight:700;color:var(--danger)">변경 ${chgCnt}명</div>`:''}
             <div class="route-toggle">${isOpen?'▲':'▼'}</div>
           </div>
