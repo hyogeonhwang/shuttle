@@ -735,10 +735,19 @@ function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/
 function getBusRoutes(busId){
   const hidden=S.db?.hiddenRoutes||[];
   const custom=(S.db?.customRoutes||[]).filter(r=>r.busId===busId);
-  return [
+  const routes=[
     ...ROUTE_DEFS.filter(r=>r.busId===busId&&!hidden.includes(r.id)),
     ...custom
-  ].map(r=>getRoute(r.id)||r); // routeDays/routeLabel 등 오버라이드 반영
+  ].map(r=>getRoute(r.id)||r);
+  // routeOrder가 설정된 경우 순서 반영
+  const order=S.db?.routeOrder?.[busId];
+  if(order&&order.length){
+    const ordered=[];
+    order.forEach(rid=>{const r=routes.find(x=>x.id===rid);if(r)ordered.push(r);});
+    routes.forEach(r=>{if(!ordered.find(x=>x.id===r.id))ordered.push(r);});
+    return ordered;
+  }
+  return routes;
 }
 // 단일 노선 조회 (ROUTE_DEFS + customRoutes) + DB 오버라이드 반영
 function getRoute(rid){
@@ -911,6 +920,7 @@ function migrateDB(){
   if(!S.db.customRoutes)S.db.customRoutes=[];
   if(!S.db.classes)S.db.classes={altiora:[],petamus:[],pangram:[]};
   if(!S.db.routeStops)S.db.routeStops={};
+  if(!S.db.routeOrder)S.db.routeOrder={};
 
   // ─── 팬그램 노선 통합 마이그레이션 ───
   // _pg_mwf_am → _pg_am (월수금 프리셋)
@@ -1619,6 +1629,17 @@ function buildTeacherView(date,dk,wd){
   const myRoutes=(selT.routes||[])
     .map(rid=>getRoute(rid))
     .filter(r=>r&&routeActiveOnDay(r,dk));
+  // 오늘현황과 동일한 순서: routeOrder 있으면 그 위치 기준, 없으면 시간 오름차순
+  myRoutes.sort((a,b)=>{
+    const orderA=S.db?.routeOrder?.[a.busId];
+    const orderB=S.db?.routeOrder?.[b.busId];
+    const posA=orderA?.length ? (orderA.indexOf(a.id)>=0 ? orderA.indexOf(a.id) : 999) : null;
+    const posB=orderB?.length ? (orderB.indexOf(b.id)>=0 ? orderB.indexOf(b.id) : 999) : null;
+    // 둘 다 routeOrder 있으면 위치 비교
+    if(posA!==null&&posB!==null) return posA-posB;
+    // 없으면 시간 비교
+    return (getRouteTime(a.id)||'').localeCompare(getRouteTime(b.id)||'');
+  });
 
   // 카카오톡 공유용 텍스트 생성
   function buildShareText(){
@@ -2055,6 +2076,10 @@ function buildBusCard(bus,date,dk,wd){
   const col=BUS_COLORS[bus.id]||'var(--pr)';
   const sfil=S.schoolFilter;
   const busRoutes=getBusRoutes(bus.id).filter(r=>routeActiveOnDay(r,dk));
+  // routeOrder가 없을 때만 시간 오름차순 정렬
+  if(!(S.db?.routeOrder?.[bus.id]?.length)){
+    busRoutes.sort((a,b)=>(getRouteTime(a.id)||'').localeCompare(getRouteTime(b.id)||''));
+  }
   let hasStudents=false;
   for(const r of busRoutes){
     const sts=getRouteStudents(r.id,date).filter(s=>sfil==='all'||s.school===sfil);
@@ -2150,6 +2175,9 @@ function buildSti(s,date){
 function buildRoutes(date,dk){
   const{busId,open}=S.routeFilter;
   const busRoutes=getBusRoutes(busId);
+  if(!(S.db?.routeOrder?.[busId]?.length)){
+    busRoutes.sort((a,b)=>(getRouteTime(a.id)||'').localeCompare(getRouteTime(b.id)||''));
+  }
   const allOpen=busRoutes.length>0&&busRoutes.every(r=>open[r.id]);
   const am=S.adminMode;
   return `<div class="card">
@@ -2959,7 +2987,13 @@ ${INIT_BUSES.map(b=>{
         </div>`;
       } else {
         // 일반 표시 모드
-        return `<div style="border:1.5px solid ${rCol}33;border-radius:8px;padding:9px 13px;background:#fff;display:flex;align-items:center;gap:10px">
+        return `<div draggable="true"
+          ondragstart="routeDragStart(event,'${b.id}','${r.id}')"
+          ondragover="routeDragOver(event)"
+          ondrop="routeDrop(event,'${b.id}','${r.id}')"
+          ondragend="routeDragEnd(event)"
+          style="border:1.5px solid ${rCol}33;border-radius:8px;padding:9px 13px;background:#fff;display:flex;align-items:center;gap:10px;cursor:default">
+          <span style="font-size:16px;color:#d1d5db;cursor:grab;flex-shrink:0" title="드래그하여 순서 변경">🟰</span>
           <div style="flex:1;min-width:0">
             <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
               <span style="font-size:13px;font-weight:900;color:${rCol}">${esc(curLabel)}</span>
@@ -3235,6 +3269,41 @@ function clsDrop(e,school,toIdx){
 }
 function clsDragEnd(e){
   _clsDrag={school:null,fromIdx:null};
+  document.querySelectorAll('[draggable]').forEach(el=>el.style.opacity='');
+  document.querySelectorAll('[draggable]').forEach(el=>el.style.background='');
+}
+
+// ─── 노선 순서 드래그 ───
+let _routeDrag={busId:null,fromId:null};
+function routeDragStart(e,busId,rid){
+  _routeDrag={busId,fromId:rid};
+  e.target.closest('[draggable]').style.opacity='0.4';
+  e.dataTransfer.effectAllowed='move';
+}
+function routeDragOver(e){
+  e.preventDefault();
+  e.dataTransfer.dropEffect='move';
+  e.currentTarget.style.background='#e0f2fe';
+}
+function routeDrop(e,busId,toId){
+  e.preventDefault();
+  e.currentTarget.style.background='';
+  if(_routeDrag.busId!==busId||_routeDrag.fromId===toId)return;
+  const routes=getBusRoutes(busId);
+  const ids=routes.map(r=>r.id);
+  const fromIdx=ids.indexOf(_routeDrag.fromId);
+  const toIdx=ids.indexOf(toId);
+  if(fromIdx<0||toIdx<0)return;
+  ids.splice(fromIdx,1);
+  ids.splice(toIdx,0,_routeDrag.fromId);
+  if(!S.db.routeOrder)S.db.routeOrder={};
+  S.db.routeOrder[busId]=ids;
+  save();
+  showToast('✅ 노선 순서 변경됨');
+  render();
+}
+function routeDragEnd(e){
+  _routeDrag={busId:null,fromId:null};
   document.querySelectorAll('[draggable]').forEach(el=>el.style.opacity='');
   document.querySelectorAll('[draggable]').forEach(el=>el.style.background='');
 }
