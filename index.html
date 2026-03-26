@@ -692,6 +692,9 @@ const INIT_STUDENTS = [
 let S={
   tab:'today', date:todayStr(), schoolFilter:'all', adminMode:false,
   todaySearch:'',
+  _todaySubTab:'main',
+  _todayCls:'',
+  _todayDir:'morning',
   _ime:false,
   modal:null, studentTab:'info', studentSearch:'', _ovOpen:{},
   routeFilter:{busId:'2', routeId:'r2_am', open:{}},
@@ -1804,18 +1807,27 @@ ${noRoutes?`<div class="card"><div class="card-body" style="text-align:center;pa
 
 function buildToday(date,dk,wd){
   const sfil=S.schoolFilter;
+  const subTab=S._todaySubTab||'main';
   const todayRouteIds=INIT_BUSES.flatMap(b=>getBusRoutes(b.id).filter(r=>routeActiveOnDay(r,dk)).map(r=>r.id));
   const allCollapsed=todayRouteIds.length>0&&todayRouteIds.every(rid=>S.routeCollapsed[rid]);
-  const routeFil=S._todayRouteFil||'all'; // 'all' 또는 특정 routeId
-  return `
+  const routeFil=S._todayRouteFil||'all';
+
+  // 학교 필터 + 서브탭
+  const topBar=`
 <div class="sf-bar">
   ${[['all','전체'],['altiora','알티오라'],['petamus','페타무스'],['pangram','팬그램']].map(([k,l])=>
     `<button class="sf-btn${sfil===k?' on':''}" data-k="${k}" onclick="setSchool('${k}')">${l}</button>`
   ).join('')}
-  <button class="btn btn-sec btn-xs" style="margin-left:auto" onclick="toggleAllRoutes()">
-    ${allCollapsed?'▼ 모두 펼치기':'▲ 모두 접기'}
-  </button>
+  ${subTab==='main'?`<button class="btn btn-sec btn-xs" style="margin-left:auto" onclick="toggleAllRoutes()">${allCollapsed?'▼ 모두 펼치기':'▲ 모두 접기'}</button>`:''}
 </div>
+<div style="display:flex;border-bottom:2px solid var(--border);background:#fff;margin-bottom:10px">
+  <div onclick="S._todaySubTab='main';render()" style="padding:8px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${subTab==='main'?'var(--pr)':'transparent'};color:${subTab==='main'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">전체 현황</div>
+  <div onclick="S._todaySubTab='cls';render()" style="padding:8px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${subTab==='cls'?'var(--pr)':'transparent'};color:${subTab==='cls'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">📋 반별 현황</div>
+</div>`;
+
+  if(subTab==='cls') return topBar+buildTodayCls(date,dk);
+
+  return topBar+`
 <div style="display:flex;gap:7px;align-items:center;margin-bottom:8px" class="no-print">
   <select style="flex:1;border:1.5px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit;background:#fff"
     onchange="S._todayRouteFil=this.value;render()">
@@ -1842,6 +1854,160 @@ ${routeFil!=='all'?`<div class="no-print">${buildStatsRow(date)}</div>`:buildSta
     :buildSingleRouteCard(routeFil,date,dk,wd)
   }
 </div>`;
+}
+
+
+function buildTodayCls(date,dk){
+  const sfil=S.schoolFilter;
+  const selCls=S._todayCls||'';
+  const dir=S._todayDir||'morning';
+
+  // 반 목록 수집
+  const schools=sfil==='all'?['altiora','petamus','pangram']:[sfil];
+  const clsList=[];
+  schools.forEach(sk=>(S.db.classes?.[sk]||[]).filter(Boolean).forEach(c=>{
+    if(!clsList.find(x=>x.cls===c))clsList.push({cls:c,school:sk});
+  }));
+
+  const clsSelectHtml=`<select style="width:100%;border:2px solid var(--pr);border-radius:8px;padding:9px 12px;font-size:14px;font-family:inherit;font-weight:700;color:var(--pr);outline:none;background:#f0f4ff;margin-bottom:12px"
+    onchange="S._todayCls=this.value;S._todayDir='morning';render()">
+    <option value="">── 반을 선택하세요</option>
+    ${clsList.map(({cls,school})=>`<option value="${esc(cls)}" ${selCls===cls?'selected':''}>${esc(cls)} (${SCHOOL_KO[school]||school})</option>`).join('')}
+  </select>`;
+
+  if(!selCls) return `<div class="card"><div class="card-body">${clsSelectHtml}<div style="text-align:center;padding:20px;color:#d1d5db;font-size:12px">반을 선택하면 오늘 탑승 현황을 확인할 수 있습니다</div></div></div>`;
+
+  // 해당 반 학생 목록 — 오늘 수업 없는 학생(__absent__ 고정) 및 탑승 미설정 학생 제외
+  const students=S.db.students.filter(s=>{
+    if(!s.active||s.cls!==selCls||!isActiveOnDate(s,date))return false;
+    const ds=s.daySchedules;
+    if(!ds)return false;
+    const daySc=ds[dk]||{};
+    const defSc=ds.default||{};
+    const mRid=daySc.morning?.routeId||(daySc.morning===undefined?defSc.morning?.routeId:'');
+    const aRid=daySc.afternoon?.routeId||(daySc.afternoon===undefined?defSc.afternoon?.routeId:'');
+    // 등원·하원 모두 __absent__이면 오늘 등교 안 함
+    if(mRid==='__absent__'&&aRid==='__absent__')return false;
+    // 등원·하원 모두 미설정(null/빈값)이면 탑승 미설정
+    if(!mRid&&!aRid)return false;
+    return true;
+  });
+
+  // 각 학생의 등원/하원 상태 계산
+  function getStuState(st,direction){
+    const dk2=getDK(date);
+    const daySc=st.daySchedules?.[dk2]?.[direction];
+    const defSc=st.daySchedules?.default?.[direction];
+    let rid=daySc?.routeId||(daySc===undefined?defSc?.routeId:null)||'';
+    if(!rid)return null; // 노선 없음
+    if(rid==='__absent__')return{state:'absent',rid:'',stop:'',time:'',route:null};
+    if(rid==='__individual__')return{state:'individual',rid:'',stop:'',time:'',route:null};
+
+    // 실제 노선
+    const sc=daySc?.routeId?daySc:(defSc?.routeId===rid?defSc:null);
+    const route=getRoute(rid);
+
+    // 당일 변경 체크
+    const chg=getActiveChg(date,st.id,rid);
+    let state='normal';
+    if(chg){
+      if(chg.type==='absent')state='absent';
+      else if(chg.type==='individual')state='individual';
+      else if(chg.type==='bus_change')state='tout';
+      else if(chg.type==='stop_change')state='stopchg';
+    }
+    // period_absent
+    for(const [,arr] of Object.entries(S.db.dailyChanges||{})){
+      for(const c of arr){
+        if(c.studentId===st.id&&c.type==='period_absent'&&!c.undone&&(c.routeId===rid||c.routeId==='all')&&c.startDate<=date&&c.endDate>=date){state='period_absent';break;}
+      }
+    }
+    return{state,rid,stop:sc?.stop||'',time:sc?.pickupTime||'',route};
+  }
+
+  // 등원/하원 카운트
+  function countDir(direction){
+    let board=0,absent=0,indiv=0;
+    students.forEach(st=>{
+      const s=getStuState(st,direction);
+      if(!s)return;
+      if(s.state==='normal'||s.state==='stopchg'||s.state==='tin')board++;
+      else if(s.state==='absent'||s.state==='period_absent')absent++;
+      else if(s.state==='individual'||s.state==='tout')indiv++;
+    });
+    return{board,absent,indiv};
+  }
+  const mCnt=countDir('morning');
+  const aCnt=countDir('afternoon');
+  const curCnt=dir==='morning'?mCnt:aCnt;
+
+  // 등원/하원 탭
+  const dirTabHtml=`<div style="display:flex;gap:0;margin-bottom:12px;border-radius:10px;overflow:hidden;border:2px solid #e2e6ef">
+    <div onclick="S._todayDir='morning';render()" style="flex:1;padding:11px 0;text-align:center;font-size:13px;font-weight:900;cursor:pointer;background:${dir==='morning'?'var(--pr)':'#f9fafb'};color:${dir==='morning'?'#fff':'#9ca3af'};display:flex;align-items:center;justify-content:center;gap:6px">
+      🌅 등원
+      <span style="font-size:10px;font-weight:700;background:${dir==='morning'?'rgba(255,255,255,.25)':'#e5e7eb'};color:${dir==='morning'?'#fff':'#6b7280'};padding:1px 7px;border-radius:10px">${mCnt.board}명</span>
+    </div>
+    <div onclick="S._todayDir='afternoon';render()" style="flex:1;padding:11px 0;text-align:center;font-size:13px;font-weight:900;cursor:pointer;background:${dir==='afternoon'?'var(--pr)':'#f9fafb'};color:${dir==='afternoon'?'#fff':'#9ca3af'};display:flex;align-items:center;justify-content:center;gap:6px">
+      🌇 하원
+      <span style="font-size:10px;font-weight:700;background:${dir==='afternoon'?'rgba(255,255,255,.25)':'#e5e7eb'};color:${dir==='afternoon'?'#fff':'#6b7280'};padding:1px 7px;border-radius:10px">${aCnt.board}명</span>
+    </div>
+  </div>`;
+
+  // 학생 목록 분류
+  const alertStudents=[], normalStudents=[];
+  students.forEach(st=>{
+    const s=getStuState(st,dir);
+    if(!s){normalStudents.push({st,s:null});return;}
+    if(s.state==='normal'||s.state==='stopchg')normalStudents.push({st,s});
+    else alertStudents.push({st,s});
+  });
+
+  // 이상 학생 HTML
+  const alertHtml=alertStudents.length>0?`
+  <div style="background:#fff8f8;border:1.5px solid #fecaca;border-radius:10px;padding:11px 13px;margin-bottom:10px">
+    <div style="font-size:11px;font-weight:900;color:#dc2626;margin-bottom:8px">⚠️ 오늘 변경/결석 ${alertStudents.length}명</div>
+    ${alertStudents.map(({st,s})=>{
+      const isAbsent=s.state==='absent'||s.state==='period_absent';
+      const isIndiv=s.state==='individual'||s.state==='tout';
+      const nameStyle=isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndiv?'text-decoration:line-through;color:#9ca3af':'color:#111';
+      const badge=isAbsent?`<span style="font-size:9px;font-weight:800;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:7px;flex-shrink:0">결석</span>`:
+        `<span style="font-size:9px;font-weight:800;background:#f3e8ff;color:#6d28d9;padding:2px 8px;border-radius:7px;flex-shrink:0">${s.state==='tout'?'호차이동':'개별'}</span>`;
+      const detail=isAbsent?`${dir==='morning'?'등원':'하원'} 결석`:(s.state==='tout'?'호차 이동':'개별'+(dir==='morning'?'등원':'하원'));
+      return `<div onclick="openStudentDetail('${st.id}','${date}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:#fff;border:1.5px solid ${isAbsent?'#fecaca':'#e9d5ff'};margin-bottom:6px;cursor:pointer" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
+        <span style="font-size:13px;font-weight:900;width:82px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${nameStyle}">${esc(st.name)}</span>
+        <span style="flex:1;font-size:10px;color:#6b7280">${detail}</span>
+        ${badge}
+      </div>`;
+    }).join('')}
+  </div>`:'';
+
+  // 정상 탑승 HTML
+  const normalHtml=normalStudents.length>0?`
+  <div style="background:#f0fdf4;border:1.5px solid #86efac;border-radius:10px;padding:11px 13px">
+    <div style="font-size:11px;font-weight:900;color:#16a34a;margin-bottom:8px">✅ 정상 탑승 ${normalStudents.filter(x=>x.s).length}명</div>
+    <div style="display:flex;flex-direction:column;gap:5px">
+    ${normalStudents.map(({st,s})=>{
+      if(!s)return `<div style="display:flex;align-items:center;gap:7px;padding:6px 8px;background:#f9fafb;border-radius:8px;border:1.5px solid #e5e7eb">
+        <span style="font-size:12px;font-weight:900;color:#9ca3af;width:80px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(st.name)}</span>
+        <span style="font-size:10px;color:#d1d5db">노선 미설정</span>
+      </div>`;
+      const busCol=BUS_COLORS[s.route?.busId||'']||'#9ca3af';
+      return `<div onclick="openStudentDetail('${st.id}','${date}')" style="display:flex;align-items:center;gap:7px;padding:6px 8px;background:#fff;border-radius:8px;border:1.5px solid #dcfce7;cursor:pointer" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
+        <span style="font-size:12px;font-weight:900;color:#111;width:80px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(st.name)}</span>
+        ${s.route?`<span style="font-size:9px;font-weight:800;background:${busCol};color:#fff;padding:2px 7px;border-radius:7px;flex-shrink:0">${s.route.busId}호</span>`:''}
+        ${s.time?`<span style="font-size:11px;font-weight:900;color:#1d4ed8;background:#eff6ff;padding:2px 6px;border-radius:6px;flex-shrink:0">${s.time}</span>`:''}
+        <span style="font-size:10px;color:#6b7280;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">${esc(s.stop||'정류장 미정')}</span>
+      </div>`;
+    }).join('')}
+    </div>
+  </div>`:'<div style="text-align:center;padding:16px;color:#d1d5db;font-size:12px">탑승 학생 없음</div>';
+
+  return `<div class="card"><div class="card-body">
+    ${clsSelectHtml}
+    ${dirTabHtml}
+    ${alertHtml||''}
+    ${normalHtml}
+  </div></div>`;
 }
 
 function buildStatsRow(date){
@@ -4107,7 +4273,7 @@ function buildEditStudentRoutes(s,routesByBus){
   function rOpts(routes,selRid){
     const indvSel=selRid==='__individual__'?'selected':'';
     return `<option value="">── 없음</option>`
-      +`<option value="__individual__" ${indvSel}>🚶 개별 하원/등원</option>`
+      +`<option value="__individual__" ${indvSel}>🚶 개별 등원/하원</option>`
       +routes.map(r=>{
         const dStr=r.days?.length===5?'월~금':(r.days||[]).map(d=>DAY_KO[d]).join('·');
         return `<option value="${r.id}" ${selRid===r.id?'selected':''}>[${r.busId}호차] ${getRouteLabel(r.id)} (${dStr} ${getRouteTime(r.id)})</option>`;
@@ -4123,12 +4289,12 @@ function buildEditStudentRoutes(s,routesByBus){
       <div class="fg" style="margin:0"><label>호차·노선</label>
         <select onchange="updateDefSched('${sid}','${dir}','routeId',this.value)">${rOpts(routes,rid)}</select>
       </div>
-      ${rid?stopSelectBlock(rid,curStop,
+      ${rid&&rid!=='__individual__'?stopSelectBlock(rid,curStop,
         `updateDefSched('${sid}','${dir}','stop',v)`,
         'def_'+prefix,
         `updateDefSched('${sid}','${dir}','pickupTime',_t);`
-      ):`<div style="font-size:10px;color:#aaa;padding:4px 0">노선을 선택하면 정류장 입력칸이 나타납니다</div>`}
-      ${rid?`
+      ):(rid?`<div style="font-size:11px;color:#7c3aed;font-weight:700;padding:4px 0">🚶 차량을 이용하지 않습니다</div>`:(`<div style="font-size:10px;color:#aaa;padding:4px 0">노선을 선택하면 정류장 입력칸이 나타납니다</div>`))}
+      ${rid&&rid!=='__individual__'?`
       <div class="fg" style="margin:5px 0 0"><label>탑승 시간 <span style="font-size:9px;color:#9ca3af;font-weight:400">24시간제 · 정류장 선택 시 자동채움</span></label>
         <input type="text" value="${esc(curTime)}" placeholder="예: 09:30" maxlength="5"
           data-timeinput="def_${prefix}"
@@ -4180,6 +4346,7 @@ function buildEditStudentRoutes(s,routesByBus){
           </select>
         </div>
         ${isAbsent?`<div style="font-size:11px;color:#94a3b8;font-weight:700;padding:4px 0">❌ 이 날은 등원하지 않습니다</div>`:''}
+        ${isIndiv?`<div style="font-size:11px;color:#7c3aed;font-weight:700;padding:4px 0">🚶 차량을 이용하지 않습니다</div>`:''}
         ${showStop?`
         ${stopSelectBlock(ov_dir.routeId,ov_dir?.stop||'',
           `updateOvSched('${sid}','${dk}','${dir}','stop',v)`,
@@ -5442,7 +5609,6 @@ function applyDayPresetDays(sid,activeDays,label){
 function updateDefSched(sid,dir,field,val){
   const ms=S.modal?.data?.student;
   const target=ms&&ms.id===sid?ms:getStudent(sid);
-  console.log('[updateDefSched] sid:',sid,'dir:',dir,'field:',field,'val:',val,'target존재:',!!target,'ms존재:',!!ms);
   if(!target)return;
   if(!target.daySchedules)target.daySchedules={default:{morning:null,afternoon:null}};
   if(!target.daySchedules.default)target.daySchedules.default={morning:null,afternoon:null};
@@ -5477,11 +5643,7 @@ function updateDefSched(sid,dir,field,val){
     }
     target.daySchedules.default[dir][field]=val;
   }
-  const dbStu=getStudent(sid);
-  if(dbStu&&target!==dbStu){
-    dbStu.daySchedules=JSON.parse(JSON.stringify(target.daySchedules));
-  }
-  save();
+  // modal 복사본만 업데이트, DB는 저장 버튼 클릭 시에만 반영
   if(field==='routeId')render();
 }
 function updateOvSched(sid,dk,dir,field,val){
@@ -5502,12 +5664,7 @@ function updateOvSched(sid,dk,dir,field,val){
     }
     target.daySchedules[dk][dir][field]=val;
   }
-  // modal 복사본과 DB 항상 동기화
-  const dbStu=getStudent(sid);
-  if(dbStu&&target!==dbStu){
-    dbStu.daySchedules=JSON.parse(JSON.stringify(target.daySchedules));
-  }
-  save();
+  // modal 복사본만 업데이트, DB는 저장 버튼 클릭 시에만 반영
   if(field==='routeId')render();
 }
 // 요일 예외 제거 (기본값으로 복원)
@@ -5515,11 +5672,8 @@ function clearOvDir(sid,dk,dir){
   const ms=S.modal?.data?.student;
   if(!ms||ms.id!==sid)return;
   if(ms.daySchedules?.[dk])delete ms.daySchedules[dk][dir];
-  const dbStu=getStudent(sid);
-  if(dbStu&&ms!==dbStu){
-    dbStu.daySchedules=JSON.parse(JSON.stringify(ms.daySchedules));
-  }
-  save();render();
+  // DB는 저장 버튼 클릭 시에만 반영
+  render();
 }
 // 요일 예외 행 펼치기/접기
 function toggleOvRow(dk){
@@ -5576,18 +5730,17 @@ function updateStudentSched(sid,rid,field,val){
 
 function saveStudentRoutes(sid){
   if(!S.adminMode){showToast('⚠️ 관리자 모드에서만 가능합니다');return;}
-  if(!getStudent(sid)){showToast('❌ 학생을 찾을 수 없습니다');return;}
   const dbStu=getStudent(sid);
-  console.log('[저장시작] sid:', sid, '| daySchedules.default:', JSON.stringify(dbStu?.daySchedules?.default));
-  console.log('[저장시작] _fbRef 존재:', !!_fbRef, '| USE_FIREBASE:', USE_FIREBASE);
+  if(!dbStu){showToast('❌ 학생을 찾을 수 없습니다');return;}
+  // modal 복사본 → DB 반영
+  const ms=S.modal?.data?.student;
+  if(ms&&ms.id===sid){
+    dbStu.daySchedules=JSON.parse(JSON.stringify(ms.daySchedules));
+  }
   showToast('💾 저장 중...');
-  saveAndWait().then(()=>{
-    console.log('[저장완료] Firebase 저장 성공');
-    showToast('✅ 탑승 정보 저장 완료');
-    render();
-  }).catch((e)=>{
-    console.error('[저장실패]', e);
-  });
+  save();
+  showToast('✅ 탑승 정보 저장 완료');
+  render();
 }
 
 function saveAndWait(){
