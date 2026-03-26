@@ -1525,7 +1525,7 @@ function buildBusRouteRows(busRoutes,date,sfil){
     const routeTime=getRouteTime(r.id);
     const collapsed=S.routeCollapsed[r.id]||false;
     const chgCnt=sts.filter(s=>s.state!=='normal'&&!s.isFixedOverride).length;
-    const normalCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg'||s.isFixedOverride).length;
+    const normalCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg').length;
     const teachersOnRoute=getTeachersForRoute(r.id);
     parts.push(`
 <div style="border-top:2px solid #e5e7eb">
@@ -1760,7 +1760,7 @@ function buildTeacherView(date,dk,wd){
       <div style="display:flex;align-items:center;gap:6px;background:#f3f4f6;border-radius:6px;padding:4px 9px;margin-bottom:4px">
         ${grp.time?`<span style="background:var(--pr);color:#fff;font-size:10px;font-weight:900;padding:2px 8px;border-radius:8px;flex-shrink:0">${grp.time}</span>`:''}
         <span style="font-size:11px;font-weight:700;color:#374151;flex:1">${esc(grp.stop||'(정류장 미정)')}</span>
-        <span style="font-size:10px;color:#9ca3af">${grp.kids.filter(s=>s.state!=='tout').length}명</span>
+        <span style="font-size:10px;color:#9ca3af">${grp.kids.filter(s=>s.state!=='tout'&&!s.isFixedOverride).length}명</span>
       </div>
       ${grp.kids.map(s=>{
         const isAbsent=s.state==='absent'||s.state==='period_absent';
@@ -2137,7 +2137,7 @@ function buildStopGroups(students,date,accentCol){
   <div class="stop-bar">
     ${g.time?`<span class="t-badge" style="background:${col}">${g.time}</span>`:''}
     <span class="stop-name">${esc(g.stop.length>32?g.stop.slice(0,32)+'…':g.stop)}</span>
-    <span class="stop-cnt">${g.studs.length}명</span>
+    <span class="stop-cnt">${g.studs.filter(s=>s.state!=='tout'&&!s.isFixedOverride).length}명</span>
   </div>
   ${g.studs.map(s=>buildSti(s,date)).join('')}
 </div>`).join('');
@@ -2208,7 +2208,7 @@ function buildRoutes(date,dk){
       const rCol=r.school==='petamus'?'#7c3f00':r.school==='pangram'?'#0e7490':'var(--pr)';
       const daysStr=(r.days||[]).length===5?'월~금':(r.days||[]).map(d=>DAY_KO[d]).join('·');
       const chgCnt=sts.filter(s=>s.state!=='normal'&&!s.isFixedOverride).length;
-      const boardCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg'||s.isFixedOverride).length;
+      const boardCnt=sts.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg').length;
       return `<div class="route-card" style="border-color:${activeToday?rCol:'var(--border)'}">
         <div class="route-card-hdr" onclick="toggleRouteOpen('${r.id}')">
           <span class="route-badge" style="background:${rCol}">${getRouteTime(r.id)}</span>
