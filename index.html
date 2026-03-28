@@ -2040,14 +2040,14 @@ function buildAttendance(date,dk,wd){
     const stus=S.db.students.filter(s=>{
       if(!s.active||s.cls!==cls||!isActiveOnDate(s,date))return false;
       const ds=s.daySchedules;
-      if(!ds)return true;
+      if(!ds)return false;
       const daySc=ds[dk]||{};
       const defSc=ds.default||{};
       const mRid=daySc.morning?.routeId||(daySc.morning===undefined?defSc.morning?.routeId:'');
       const aRid=daySc.afternoon?.routeId||(daySc.afternoon===undefined?defSc.afternoon?.routeId:'');
-      // 실제 노선이 하나도 없으면 오늘 등교 없음 — absent/individual/빈값 모두 제외
-      const hasRealRoute=rid=>rid&&rid!=='__absent__'&&rid!=='__individual__';
-      if(!hasRealRoute(mRid)&&!hasRealRoute(aRid))return false;
+      // 오늘현황 반별현황과 동일 기준
+      if(mRid==='__absent__'&&aRid==='__absent__')return false;
+      if(!mRid&&!aRid)return false;
       return true;
     });
     const total=stus.length;
