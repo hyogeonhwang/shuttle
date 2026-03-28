@@ -2091,15 +2091,23 @@ function buildAttendance(date,dk,wd){
       attend++;
     });
 
-    // 오늘 변동 (당일 등록된 것만)
+    // 오늘 변동 (당일 등록된 것만, 중복 제거)
     const changes=[];
+    const seenChg=new Set();
     todayChgs.forEach(c=>{
       const st=stus.find(s=>s.id===c.studentId);
       if(!st)return;
-      if(c.type==='absent'||c.type==='period_absent')changes.push({name:st.name,type:'결석',cls:'tag-absent'});
-      else if(c.type==='individual')changes.push({name:st.name,type:'개별',cls:'tag-indiv'});
-      else if(c.type==='bus_change')changes.push({name:st.name,type:'호차이동',cls:'tag-change'});
-      else if(c.type==='stop_change')changes.push({name:st.name,type:'정류장변경',cls:'tag-stop'});
+      let type='';
+      if(c.type==='absent'||c.type==='period_absent')type='결석';
+      else if(c.type==='individual')type='개별';
+      else if(c.type==='bus_change')type='호차이동';
+      else if(c.type==='stop_change')type='정류장변경';
+      else return;
+      const key=st.id+'_'+type;
+      if(seenChg.has(key))return;
+      seenChg.add(key);
+      const cls2=type==='결석'?'tag-absent':type==='개별'?'tag-indiv':'tag-change';
+      changes.push({name:st.name,type,cls:cls2});
     });
 
     return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,changes};
