@@ -1404,6 +1404,15 @@ function render(){
   bindEvents();
   if(S.todaySearch) filterTodayDOM(S.todaySearch);
   filterStudentDOM(S.studentSearch||'');
+  // 출결현황 hover 바인딩
+  if(S.tab==='attendance'){
+    setTimeout(()=>{
+      document.querySelectorAll('[onclick*="att_modal"]').forEach(el=>{
+        el.addEventListener('mouseenter',function(){const t=this.querySelector('.att-hover-tip');if(t)t.style.display='block';});
+        el.addEventListener('mouseleave',function(){const t=this.querySelector('.att-hover-tip');if(t)t.style.display='none';});
+      });
+    },50);
+  }
   if(S.modal?.type==='adminLogin'){
     setTimeout(()=>{const i=document.getElementById('admin_pw_inp');if(i)i.focus();},30);
   }
@@ -1421,6 +1430,7 @@ function buildApp(){
   const chgCnt=countTodayChanges(date);
   const tabs=[
     {k:'today',ic:'📋',lbl:'오늘현황'},
+    {k:'attendance',ic:'📊',lbl:'출결현황'},
     {k:'tview',ic:'👤',lbl:'교사뷰'},
     {k:'routes',ic:'🗺',lbl:'노선관리'},
     {k:'students',ic:'👦',lbl:'학생관리'},
@@ -1478,6 +1488,7 @@ function buildApp(){
     ${!wd&&tab!=='settings'&&tab!=='students'?`<div class="note note-warn">⚠️ ${dn}요일은 운행일이 아닙니다.</div>`:''}
     ${tab==='today'?buildToday(date,dk,wd):
       tab==='tview'?buildTeacherView(date,dk,wd):
+      tab==='attendance'?buildAttendance(date,dk,wd):
       tab==='routes'?buildRoutes(date,dk):
       tab==='students'?buildStudents():
       tab==='changes'?buildChanges(date):
@@ -2008,6 +2019,196 @@ function buildTodayCls(date,dk){
     ${alertHtml||''}
     ${normalHtml}
   </div></div>`;
+}
+
+function buildAttendance(date,dk,wd){
+  const sfil=S.schoolFilter;
+  if(!wd) return '';
+
+  // 전체 반 목록 수집
+  const schools=sfil==='all'?['altiora','petamus','pangram']:[sfil];
+  const clsList=[];
+  schools.forEach(sk=>(S.db.classes?.[sk]||[]).filter(Boolean).forEach(c=>{
+    if(!clsList.find(x=>x.cls===c))clsList.push({cls:c,school:sk});
+  }));
+
+  // 오늘 변동(당일 변경 등록) 목록
+  const todayChgs=getDayChanges(date).filter(c=>!c.undone);
+
+  // 각 반의 출결 집계
+  function calcCls(cls){
+    const stus=S.db.students.filter(s=>{
+      if(!s.active||s.cls!==cls||!isActiveOnDate(s,date))return false;
+      const ds=s.daySchedules;
+      if(!ds)return true;
+      const daySc=ds[dk]||{};
+      const defSc=ds.default||{};
+      const mRid=daySc.morning?.routeId||(daySc.morning===undefined?defSc.morning?.routeId:'');
+      const aRid=daySc.afternoon?.routeId||(daySc.afternoon===undefined?defSc.afternoon?.routeId:'');
+      // 오늘 수업 없는 학생(등원·하원 모두 __absent__) 제외
+      if(mRid==='__absent__'&&aRid==='__absent__')return false;
+      return true;
+    });
+    const total=stus.length;
+    let absent=0,indivM=0,indivA=0,attend=0;
+    const absentNames=[],indivMNames=[],indivANames=[];
+
+    stus.forEach(st=>{
+      // 등원 상태
+      const mRid=(st.daySchedules?.[dk]?.morning?.routeId)||(st.daySchedules?.[dk]?.morning===undefined?st.daySchedules?.default?.morning?.routeId:null)||'';
+      const aRid=(st.daySchedules?.[dk]?.afternoon?.routeId)||(st.daySchedules?.[dk]?.afternoon===undefined?st.daySchedules?.default?.afternoon?.routeId:null)||'';
+
+      // 당일 변경 체크
+      const chgs=todayChgs.filter(c=>c.studentId===st.id);
+      const absentChg=chgs.find(c=>c.type==='absent'||c.type==='period_absent');
+      const indivChg=chgs.find(c=>c.type==='individual');
+
+      // 결석
+      let isAbsent=false;
+      if(absentChg){isAbsent=true;}
+      else{
+        // period_absent 체크
+        for(const [,arr] of Object.entries(S.db.dailyChanges||{})){
+          for(const c of arr){
+            if(c.studentId===st.id&&(c.type==='period_absent')&&!c.undone&&c.startDate<=date&&c.endDate>=date){isAbsent=true;break;}
+          }
+          if(isAbsent)break;
+        }
+      }
+      if(mRid==='__absent__'&&aRid==='__absent__')isAbsent=true;
+
+      if(isAbsent){absent++;absentNames.push(st.name);return;}
+
+      // 개별등원
+      const isMIndiv=mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir));
+      // 개별하원
+      const isAIndiv=aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir));
+
+      if(isMIndiv){indivM++;indivMNames.push(st.name);}
+      if(isAIndiv){indivA++;indivANames.push(st.name);}
+
+      attend++;
+    });
+
+    // 오늘 변동 (당일 등록된 것만)
+    const changes=[];
+    todayChgs.forEach(c=>{
+      const st=stus.find(s=>s.id===c.studentId);
+      if(!st)return;
+      if(c.type==='absent'||c.type==='period_absent')changes.push({name:st.name,type:'결석',cls:'tag-absent'});
+      else if(c.type==='individual')changes.push({name:st.name,type:'개별',cls:'tag-indiv'});
+      else if(c.type==='bus_change')changes.push({name:st.name,type:'호차이동',cls:'tag-change'});
+      else if(c.type==='stop_change')changes.push({name:st.name,type:'정류장변경',cls:'tag-stop'});
+    });
+
+    return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,changes};
+  }
+
+  // 전체 합계
+  let totTotal=0,totAttend=0,totAbsent=0,totChanges=0;
+  const rows=clsList.map(({cls,school})=>{
+    const r=calcCls(cls);
+    if(!r||r.total===0)return null;
+    totTotal+=r.total;totAttend+=r.attend;totAbsent+=r.absent;totChanges+=r.changes.length;
+    return{cls,school,r};
+  }).filter(Boolean);
+
+  // 숫자+hover 렌더 함수 (data attribute 방식으로 인용부호 충돌 방지)
+  function numCell(count,names,type,colorStyle,emoji){
+    if(!count)return '<td style="text-align:center;color:#d1d5db;font-size:12px">0</td>';
+    const safeNames=names.map(n=>esc(n));
+    const hoverItems=safeNames.map(n=>'<div style="padding:1px 0;font-size:11px">'+emoji+' '+n+'</div>').join('');
+    const dataNames=encodeURIComponent(JSON.stringify(safeNames));
+    return '<td style="text-align:center">'
+      +'<div style="position:relative;display:inline-block;cursor:pointer" '
+      +'data-atttype="'+type+'" data-attnames="'+dataNames+'" data-attemoji="'+emoji+'" '
+      +'onmouseenter="this.querySelector(\'.att-hover-tip\').style.display=\'block\'" '
+      +'onmouseleave="this.querySelector(\'.att-hover-tip\').style.display=\'none\'" '
+      +'onclick="attShowModal(this)">'
+      +'<span style="display:inline-block;min-width:28px;padding:2px 8px;border-radius:6px;font-weight:900;font-size:12px;'+colorStyle+'">'+count+'</span>'
+      +'<div class="att-hover-tip" style="display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;border-radius:10px;padding:10px 14px;font-size:11px;white-space:nowrap;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.3);min-width:120px;text-align:left;pointer-events:none">'
+      +'<div style="font-weight:900;margin-bottom:6px;color:#9ca3af;font-size:10px">'+type+'</div>'
+      +hoverItems
+      +'<div style="position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:#1f2937"></div>'
+      +'</div></div></td>';
+  }
+
+  return `
+<div class="sf-bar">
+  ${[['all','전체'],['altiora','알티오라'],['petamus','페타무스'],['pangram','팬그램']].map(([k,l])=>
+    `<button class="sf-btn${sfil===k?' on':''}" data-k="${k}" onclick="setSchool('${k}')">${l}</button>`
+  ).join('')}
+</div>
+
+<!-- 전체 요약 -->
+<div style="display:flex;gap:8px;padding:12px 12px 0">
+  ${[
+    ['전체 정원',totTotal,'#1A3169'],
+    ['출석',totAttend,'#16a34a'],
+    ['결석',totAbsent,'#dc2626'],
+    ['오늘 변동',totChanges,'#d97706'],
+  ].map(([l,v,c])=>`
+  <div style="flex:1;background:#fff;border-radius:9px;padding:10px 8px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+    <div style="font-size:20px;font-weight:900;color:${c}">${v}</div>
+    <div style="font-size:9px;color:#9ca3af;margin-top:2px">${l}</div>
+  </div>`).join('')}
+</div>
+
+<!-- 반별 테이블 -->
+<div style="padding:12px">
+<div class="card">
+  <div style="padding:11px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e2e6ef">
+    <span style="font-size:13px;font-weight:900;color:#1A3169">📊 반별 출결 현황</span>
+    <span style="font-size:10px;color:#9ca3af">숫자에 마우스 올리기 (PC) · 탭 (모바일)</span>
+  </div>
+  <div style="padding:12px;overflow-x:auto">
+  <table style="width:100%;border-collapse:collapse;min-width:520px">
+    <thead>
+      <tr>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:left;white-space:nowrap">반</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:center">정원</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:center">출석</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:center">결석</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:center">개별등원</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:center">개별하원</th>
+        <th style="background:#1A3169;color:#fff;padding:8px 6px;font-size:11px;font-weight:700;text-align:left">오늘 변동</th>
+      </tr>
+    </thead>
+    <tbody>
+    ${rows.map(({cls,school,r},i)=>{
+      const bg=i%2===0?'#fff':'#f9fafb';
+      const schoolCol=school==='petamus'?'#7c3aed':school==='pangram'?'#0e7490':'#1A3169';
+      const changeTags=r.changes.map(c=>{
+        const col=c.cls==='tag-absent'?'background:#fee2e2;color:#991b1b':c.cls==='tag-indiv'?'background:#f3e8ff;color:#6d28d9':'background:#fef3c7;color:#92400e';
+        return `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 6px;border-radius:5px;margin:1px 2px 1px 0;white-space:nowrap;${col}">${esc(c.name)}(${c.type})</span>`;
+      }).join('');
+      return `<tr style="background:${bg}">
+        <td style="padding:8px 6px;font-size:12px;font-weight:700;color:${schoolCol};white-space:nowrap">${esc(cls)}</td>
+        <td style="padding:8px 6px;font-size:12px;text-align:center;color:#374151">${r.total}</td>
+        <td style="padding:8px 6px;font-size:12px;text-align:center;font-weight:700;color:#16a34a">${r.attend}</td>
+        ${numCell(r.absent,r.absentNames,'결석','background:#fee2e2;color:#dc2626','😷')}
+        ${numCell(r.indivM,r.indivMNames,'개별등원','background:#e0e7ff;color:#4338ca','🌅')}
+        ${numCell(r.indivA,r.indivANames,'개별하원','background:#f3e8ff;color:#7c3aed','🌇')}        <td style="padding:8px 6px;font-size:12px;max-width:160px">${changeTags||`<span style="color:#d1d5db;font-size:10px">-</span>`}</td>
+      </tr>`;
+    }).join('')}
+    </tbody>
+  </table>
+  </div>
+</div>
+</div>
+
+<!-- 모바일 클릭 팝업 -->
+<div id="att_modal" onclick="if(event.target===this)this.style.display='none'"
+  style="display:none;position:fixed;inset:0;z-index:999;background:rgba(0,0,0,.35);align-items:center;justify-content:center;padding:20px">
+  <div style="background:#fff;border-radius:14px;padding:18px;max-width:280px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span id="att_modal_title" style="font-size:13px;font-weight:900"></span>
+      <button onclick="document.getElementById('att_modal').style.display='none'"
+        style="border:none;background:none;font-size:20px;cursor:pointer;color:#9ca3af">×</button>
+    </div>
+    <div id="att_modal_list"></div>
+  </div>
+</div>`;
 }
 
 function buildStatsRow(date){
@@ -5310,6 +5511,16 @@ function updateBusChangeDOM(){
   }
 }
 
+function attShowModal(el){
+  const type=el.dataset.atttype||'';
+  const emoji=el.dataset.attemoji||'';
+  const names=JSON.parse(decodeURIComponent(el.dataset.attnames||'[]'));
+  const modal=document.getElementById('att_modal');
+  if(!modal)return;
+  modal.querySelector('#att_modal_title').textContent=type+' '+names.length+'명';
+  modal.querySelector('#att_modal_list').innerHTML=names.map(n=>'<div style="padding:6px 0;border-bottom:1px solid #f3f4f6;font-size:12px;font-weight:700">'+emoji+' '+n+'</div>').join('');
+  modal.style.display='flex';
+}
 function openChangeModal(studentId,routeId){
   S.modal={type:'change',data:{date:S.date,preStudentId:studentId||'',preRouteId:routeId||'',ct:'absent',selSid:studentId||'',selRid:routeId||''}};
   render();
