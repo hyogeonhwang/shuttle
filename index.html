@@ -1784,7 +1784,7 @@ function buildTeacherView(date,dk,wd){
         return `<div onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:6px;padding:5px 9px;border-radius:6px;background:${isAbsent?'#fef2f2':isIndividual?'#f5f3ff':isTout?'#f9fafb':s.state==='tin'?'#eff6ff':''};margin-bottom:2px;cursor:pointer;user-select:none;-webkit-user-select:none" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
           <span style="font-size:13px;font-weight:900;${isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndividual||isTout?'text-decoration:line-through;color:#9ca3af':'color:#1f2937'}">${esc(s.name)}</span>
           ${s.cls?`<span style="font-size:10px;color:#d1d5db">${esc(s.cls)}</span>`:''}
-          ${s.phone?`<a href="tel:${s.phone}" onclick="event.stopPropagation()" style="font-size:10px;color:var(--pr);margin-left:auto">${esc(s.phone)}</a>`:''}
+          ${(isAbsent||isIndividual)&&s.chg?.notes?(()=>{const m=s.chg.notes;const ms=m.length>15?m.slice(0,15)+'…':m;return `<span title="${esc(m)}" style="font-size:10px;color:#9ca3af;margin-left:auto;flex-shrink:0;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ms)}</span>`;})():(!(isAbsent||isIndividual)&&s.phone?`<a href="tel:${s.phone}" onclick="event.stopPropagation()" style="font-size:10px;color:var(--pr);margin-left:auto">${esc(s.phone)}</a>`:'')}
           ${isAbsent&&s.state==='period_absent'?`<span style="font-size:9px;font-weight:800;color:#7c3aed;background:#ede9fe;padding:1px 6px;border-radius:6px">기간결석${s.chg?.startDate?` ${s.chg.startDate.slice(5).replace('-','/')}~${(s.chg.endDate||s.chg.startDate).slice(5).replace('-','/')}`:''}</span>`:''} 
           ${isAbsent&&s.state==='absent'?`<span style="font-size:9px;font-weight:800;color:#dc2626;background:#fee2e2;padding:1px 6px;border-radius:6px">결석</span>`:''}
           ${isFixedInd?`<span style="font-size:9px;font-weight:800;color:#3730a3;background:#e0e7ff;padding:1px 6px;border-radius:6px">개별</span>`:''}
@@ -1984,9 +1984,12 @@ function buildTodayCls(date,dk){
       const badge=isAbsent?`<span style="font-size:9px;font-weight:800;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:7px;flex-shrink:0">결석</span>`:
         `<span style="font-size:9px;font-weight:800;background:#f3e8ff;color:#6d28d9;padding:2px 8px;border-radius:7px;flex-shrink:0">${s.state==='tout'?'호차이동':'개별'}</span>`;
       const detail=isAbsent?`${dir==='morning'?'등원':'하원'} 결석`:(s.state==='tout'?'호차 이동':'개별'+(dir==='morning'?'등원':'하원'));
+      const chgMemo=s.chg?.notes||'';
+      const memoShort=chgMemo.length>15?chgMemo.slice(0,15)+'…':chgMemo;
       return `<div onclick="openStudentDetail('${st.id}','${date}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:#fff;border:1.5px solid ${isAbsent?'#fecaca':'#e9d5ff'};margin-bottom:6px;cursor:pointer" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
         <span style="font-size:13px;font-weight:900;width:82px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${nameStyle}">${esc(st.name)}</span>
         <span style="flex:1;font-size:10px;color:#6b7280">${detail}</span>
+        ${chgMemo?`<span title="${esc(chgMemo)}" style="font-size:10px;color:#9ca3af;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${esc(memoShort)}</span>`:''}
         ${badge}
       </div>`;
     }).join('')}
@@ -2107,7 +2110,8 @@ function buildAttendance(date,dk,wd){
       if(seenChg.has(key))return;
       seenChg.add(key);
       const cls2=type==='결석'?'tag-absent':type==='개별'?'tag-indiv':'tag-change';
-      changes.push({name:st.name,type,cls:cls2});
+      const memo=c.notes||'';
+      changes.push({name:st.name,type,cls:cls2,memo});
     });
 
     return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,changes};
@@ -2189,7 +2193,9 @@ function buildAttendance(date,dk,wd){
       const schoolCol=school==='petamus'?'#7c3aed':school==='pangram'?'#0e7490':'#1A3169';
       const changeTags=r.changes.map(c=>{
         const col=c.cls==='tag-absent'?'background:#fee2e2;color:#991b1b':c.cls==='tag-indiv'?'background:#f3e8ff;color:#6d28d9':'background:#fef3c7;color:#92400e';
-        return `<span style="display:inline-block;font-size:9px;font-weight:800;padding:1px 6px;border-radius:5px;margin:1px 2px 1px 0;white-space:nowrap;${col}">${esc(c.name)}(${c.type})</span>`;
+        const memoStr=c.memo?(()=>{const m=c.memo;return ' '+(m.length>10?m.slice(0,10)+'…':m);})():'';
+        return `<span title="${esc(c.memo||'')}" style="display:inline-block;font-size:9px;font-weight:800;padding:1px 6px;border-radius:5px;margin:1px 2px 1px 0;white-space:nowrap;${col}">${esc(c.name)}(${c.type})${esc(memoStr)}</span>`;
+
       }).join('');
       return `<tr style="background:${bg}">
         <td style="padding:8px 6px;font-size:12px;font-weight:700;color:${schoolCol};white-space:nowrap">${esc(cls)}</td>
@@ -2538,12 +2544,22 @@ function buildSti(s,date){
   const isIndivState=state==='individual';
   const isCrossed=isAbsentState||isIndivState;
   const crossStyle=isAbsentState?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndivState?'text-decoration:line-through;color:#9ca3af':'';
+  // 결석/개별이면 시간 대신 메모 표시
+  const chgMemo=(isAbsentState||isIndivState)?(()=>{
+    const chgs=getDayChanges(date).filter(c=>c.studentId===s.id&&!c.undone);
+    return chgs.map(c=>c.notes||'').find(n=>n)||'';
+  })():'';
+  const MEMO_MAX=15;
+  const memoShort=chgMemo.length>MEMO_MAX?chgMemo.slice(0,MEMO_MAX)+'…':chgMemo;
+  const rightCol=(isAbsentState||isIndivState)
+    ?(chgMemo?`<span title="${esc(chgMemo)}" style="font-size:10px;color:#9ca3af;flex-shrink:0;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(memoShort)}</span>`:'')
+    :(curTime?`<span style="font-size:10px;color:#9ca3af;flex-shrink:0">${curTime}</span>`:'');
   return `<div class="sti ${clsMap[displayState]||''}" data-name="${esc(s.name)}" onclick="openStudentDetail('${s.id}','${date}')" style="display:flex;align-items:center;gap:5px;padding:5px 8px;user-select:none;-webkit-user-select:none">
   ${schDot}
   <span class="stn" style="flex:1;${crossStyle}">${esc(s.name)}</span>
   ${s.cls?`<span class="sc">${esc(s.cls)}</span>`:''}
   ${s.isFixedOverride?`<span class="pin" style="background:#e0e7ff;color:#3730a3;font-size:9px">개별</span>`:(pinMap[state]||'')}
-  ${curTime?`<span style="font-size:10px;color:#9ca3af;flex-shrink:0">${curTime}</span>`:''}
+  ${rightCol}
 </div>`;
 }
 
