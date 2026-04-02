@@ -1911,8 +1911,15 @@ function buildTodayCls(date,dk){
     const defSc=st.daySchedules?.default?.[direction];
     let rid=daySc?.routeId||(daySc===undefined?defSc?.routeId:null)||'';
     if(!rid)return null; // 노선 없음
-    if(rid==='__absent__')return{state:'absent',rid:'',stop:'',time:'',route:null};
-    if(rid==='__individual__')return{state:'individual',rid:'',stop:'',time:'',route:null};
+    if(rid==='__absent__')return{state:'absent',rid:'',stop:'',time:'',route:null,chg:null};
+    if(rid==='__individual__'){
+      // 개별등하원이어도 당일 결석 등록이 있으면 결석으로
+      const chgInd=getActiveChg(date,st.id,'__individual__')||getActiveChg(date,st.id,'all');
+      const periodAbsent=(()=>{for(const[,arr]of Object.entries(S.db.dailyChanges||{})){for(const c of arr){if(c.studentId===st.id&&c.type==='period_absent'&&!c.undone&&c.startDate<=date&&c.endDate>=date)return c;}}return null;})();
+      if(periodAbsent)return{state:'period_absent',rid:'',stop:'',time:'',route:null,chg:periodAbsent};
+      if(chgInd?.type==='absent')return{state:'absent',rid:'',stop:'',time:'',route:null,chg:chgInd};
+      return{state:'individual',rid:'',stop:'',time:'',route:null,chg:chgInd||null};
+    }
 
     // 실제 노선
     const sc=daySc?.routeId?daySc:(defSc?.routeId===rid?defSc:null);
