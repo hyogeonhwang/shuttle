@@ -1913,12 +1913,13 @@ function buildTodayCls(date,dk){
     if(!rid)return null; // 노선 없음
     if(rid==='__absent__')return{state:'absent',rid:'',stop:'',time:'',route:null,chg:null};
     if(rid==='__individual__'){
-      // 개별등하원이어도 당일 결석 등록이 있으면 결석으로
-      const chgInd=getActiveChg(date,st.id,'__individual__')||getActiveChg(date,st.id,'all');
+      // 개별등하원이어도 당일 결석 등록(routeId='all')이 있으면 결석으로
+      const chgs=getDayChanges(date).filter(c=>c.studentId===st.id&&!c.undone);
+      const absentChg=chgs.find(c=>c.type==='absent');
       const periodAbsent=(()=>{for(const[,arr]of Object.entries(S.db.dailyChanges||{})){for(const c of arr){if(c.studentId===st.id&&c.type==='period_absent'&&!c.undone&&c.startDate<=date&&c.endDate>=date)return c;}}return null;})();
       if(periodAbsent)return{state:'period_absent',rid:'',stop:'',time:'',route:null,chg:periodAbsent};
-      if(chgInd?.type==='absent')return{state:'absent',rid:'',stop:'',time:'',route:null,chg:chgInd};
-      return{state:'individual',rid:'',stop:'',time:'',route:null,chg:chgInd||null};
+      if(absentChg)return{state:'absent',rid:'',stop:'',time:'',route:null,chg:absentChg};
+      return{state:'individual',rid:'',stop:'',time:'',route:null,chg:null};
     }
 
     // 실제 노선
@@ -5583,17 +5584,20 @@ function saveChange(){
     const ds=st.daySchedules||{};
     const dayEx=ds[dk]||{};
     const defSc=ds.default||{};
-    const morningRid=(dayEx.morning?.routeId||defSc.morning?.routeId||'').replace(/^__|__$/g,'').trim();
-    const afternoonRid=(dayEx.afternoon?.routeId||defSc.afternoon?.routeId||'').replace(/^__|__$/g,'').trim();
-    // 실제 노선(개별/미등원 제외)
-    const absentRids=[...new Set([morningRid,afternoonRid].filter(r=>r&&!r.startsWith('__')))];
-    if(absentRids.length===0){alert('해당 학생의 오늘 탑승 노선이 없습니다');return;}
+    const morningRid=(dayEx.morning?.routeId||defSc.morning?.routeId||'');
+    const afternoonRid=(dayEx.afternoon?.routeId||defSc.afternoon?.routeId||'');
+    // 실제 노선(개별/미등원 포함) - 개별등하원 학생도 결석 가능
+    const realRids=[...new Set([morningRid,afternoonRid].filter(r=>r&&r!=='__absent__'))];
+    const absentRids=realRids.filter(r=>!r.startsWith('__'));
+    // 개별등하원 학생처럼 실제 노선이 없으면 'all'로 저장
+    const saveRids=absentRids.length>0?absentRids:['all'];
+    if(realRids.length===0){alert('해당 학생의 오늘 탑승 노선이 없습니다');return;}
     const typeKO='결석';
     if(!confirm(`[${st.name}] 오늘 결석 처리하시겠습니까?\n등원+하원 모두 결석 처리됩니다.`))return;
     const notes=el('m_notes')?.value||'';
     const arr=getDayChanges(S.date);
-    let filtered=arr.filter(c=>!(c.studentId===sid&&absentRids.includes(c.routeId)&&!c.undone));
-    absentRids.forEach(r=>{
+    let filtered=arr.filter(c=>!(c.studentId===sid&&saveRids.includes(c.routeId)&&!c.undone));
+    saveRids.forEach(r=>{
       filtered.push({id:uid(),studentId:sid,routeId:r,type:'absent',notes,timestamp:Date.now(),undone:false});
     });
     setDayChanges(S.date,filtered);
