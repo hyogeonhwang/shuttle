@@ -2084,7 +2084,7 @@ function buildAttendance(date,dk,wd){
     });
     const total=stus.length;
     let absent=0,indivM=0,indivA=0,attend=0;
-    const absentNames=[],indivMNames=[],indivANames=[];
+    const absentNames=[],indivMNames=[],indivANames=[],attendNames=[];
 
     stus.forEach(st=>{
       // 등원 상태
@@ -2121,6 +2121,7 @@ function buildAttendance(date,dk,wd){
       if(isAIndiv){indivA++;indivANames.push(st.name);}
 
       attend++;
+      attendNames.push(st.name);
     });
 
     // 오늘 변동 (당일 등록된 것만, 중복 제거)
@@ -2143,7 +2144,7 @@ function buildAttendance(date,dk,wd){
       changes.push({name:st.name,type,cls:cls2,memo});
     });
 
-    return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,changes};
+    return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,attendNames,changes};
   }
 
   // 전체 합계
@@ -2164,14 +2165,14 @@ function buildAttendance(date,dk,wd){
     return '<td style="text-align:center">'
       +'<div style="position:relative;display:inline-block;cursor:pointer" '
       +'data-atttype="'+type+'" data-attnames="'+dataNames+'" data-attemoji="'+emoji+'" '
-      +'onmouseenter="this.querySelector(\'.att-hover-tip\').style.display=\'block\'" '
+      +'onmouseenter="attTipShow(this)" '
       +'onmouseleave="this.querySelector(\'.att-hover-tip\').style.display=\'none\'" '
       +'onclick="attShowModal(this)">'
       +'<span style="display:inline-block;min-width:28px;padding:2px 8px;border-radius:6px;font-weight:900;font-size:12px;'+colorStyle+'">'+count+'</span>'
-      +'<div class="att-hover-tip" style="display:none;position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;border-radius:10px;padding:10px 14px;font-size:11px;white-space:nowrap;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.3);min-width:120px;text-align:left;pointer-events:none">'
+      +'<div class="att-hover-tip" style="display:none;position:absolute;left:50%;transform:translateX(-50%);background:#1f2937;color:#fff;border-radius:10px;padding:10px 14px;font-size:11px;white-space:nowrap;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,.3);min-width:120px;text-align:left;pointer-events:none">'
       +'<div style="font-weight:900;margin-bottom:6px;color:#9ca3af;font-size:10px">'+type+'</div>'
       +hoverItems
-      +'<div style="position:absolute;top:100%;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:#1f2937"></div>'
+      +'<div class="att-tip-arrow" style="position:absolute;left:50%;transform:translateX(-50%);border:6px solid transparent;border-top-color:#1f2937;top:100%"></div>'
       +'</div></div></td>';
   }
 
@@ -2229,7 +2230,7 @@ function buildAttendance(date,dk,wd){
       return `<tr style="background:${bg}">
         <td style="padding:8px 6px;font-size:12px;font-weight:700;color:${schoolCol};white-space:nowrap">${esc(cls)}</td>
         <td style="padding:8px 6px;font-size:12px;text-align:center;color:#374151">${r.total}</td>
-        <td style="padding:8px 6px;font-size:12px;text-align:center;font-weight:700;color:#16a34a">${r.attend}</td>
+        ${numCell(r.attend,r.attendNames,'출석','background:#dcfce7;color:#16a34a','✅')}
         ${numCell(r.absent,r.absentNames,'결석','background:#fee2e2;color:#dc2626','😷')}
         ${numCell(r.indivM,r.indivMNames,'개별등원','background:#e0e7ff;color:#4338ca','🌅')}
         ${numCell(r.indivA,r.indivANames,'개별하원','background:#f3e8ff;color:#7c3aed','🌇')}        <td style="padding:8px 6px;font-size:12px;max-width:160px">${changeTags||`<span style="color:#d1d5db;font-size:10px">-</span>`}</td>
@@ -5664,6 +5665,37 @@ function updateBusChangeDOM(){
     const prev=S.modal.data.toRouteId||'';
     sel.innerHTML='<option value="">-- 노선 선택 --</option>'+
       filtered.map(r=>`<option value="${r.id}" ${r.id===prev?'selected':''}>[${r.busId}호] ${getRouteLabel(r.id)} ${getRouteTime(r.id)}</option>`).join('');
+  }
+}
+
+function attTipShow(el){
+  const tip=el.querySelector('.att-hover-tip');
+  const arrow=el.querySelector('.att-tip-arrow');
+  if(!tip)return;
+  // 일단 투명하게 보여서 높이 측정
+  tip.style.visibility='hidden';
+  tip.style.display='block';
+  const tipH=tip.offsetHeight;
+  tip.style.visibility='';
+  const rect=el.getBoundingClientRect();
+  const spaceAbove=rect.top;
+  const spaceBelow=window.innerHeight-rect.bottom;
+  if(spaceAbove>=tipH+20&&spaceAbove>=spaceBelow){
+    // 위로
+    tip.style.bottom='calc(100% + 8px)';
+    tip.style.top='';
+    arrow.style.top='100%';
+    arrow.style.bottom='';
+    arrow.style.borderTopColor='#1f2937';
+    arrow.style.borderBottomColor='transparent';
+  } else {
+    // 아래로
+    tip.style.top='calc(100% + 8px)';
+    tip.style.bottom='';
+    arrow.style.bottom='100%';
+    arrow.style.top='';
+    arrow.style.borderBottomColor='#1f2937';
+    arrow.style.borderTopColor='transparent';
   }
 }
 
