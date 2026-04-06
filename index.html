@@ -3790,34 +3790,61 @@ function updateClass(school,idx,val){
 
 function buildSettingsSystem(){
   const year=new Date().getFullYear();
+  const today=new Date().toISOString().slice(0,10);
   // 스냅샷 목록
   const snapshots=[];
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);
     if(k&&k.startsWith('shuttle_snapshot_')){
-      snapshots.push(k.replace('shuttle_snapshot_',''));
+      const d=k.replace('shuttle_snapshot_','');
+      let meta={students:0,routes:0,teachers:0};
+      try{
+        const raw=localStorage.getItem(k);
+        if(raw){
+          const obj=JSON.parse(raw);
+          meta.students=(obj.students||[]).filter(s=>s&&s.active).length;
+          meta.routes=Object.keys(obj.routeLabels||{}).length||Object.keys(obj.routeStops||{}).length;
+          meta.teachers=(obj.teachers||[]).length;
+        }
+      }catch(e){}
+      snapshots.push({d,meta});
     }
   }
-  snapshots.sort().reverse();
+  snapshots.sort((a,b)=>b.d.localeCompare(a.d));
 
   return `
 <div style="border:2px solid #dcfce7;border-radius:10px;overflow:hidden;margin-bottom:16px">
-  <div style="background:#f0fdf4;padding:12px 16px;border-bottom:1px solid #dcfce7;display:flex;align-items:center;gap:8px">
-    <span style="font-size:18px">🛡️</span>
-    <div>
-      <div style="font-size:13px;font-weight:900;color:#166534">자동 스냅샷 복구</div>
-      <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 자동 저장됩니다. 최근 7일치 보관.</div>
+  <div style="background:#f0fdf4;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="const b=document.getElementById('snap_body');const a=document.getElementById('snap_arrow');if(b.style.display==='none'){b.style.display='block';a.textContent='▲';}else{b.style.display='none';a.textContent='▼';}">
+    <div style="display:flex;align-items:center;gap:8px">
+      <span style="font-size:18px">🛡️</span>
+      <div>
+        <div style="font-size:13px;font-weight:900;color:#166534">자동 스냅샷 복구</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 자동 저장됩니다. 최근 7일치 보관. (${snapshots.length}개)</div>
+      </div>
     </div>
+    <span id="snap_arrow" style="font-size:11px;color:#166534">▼</span>
   </div>
-  <div style="padding:14px 16px">
-    ${snapshots.length===0?`<div style="font-size:12px;color:#9ca3af">저장된 스냅샷이 없습니다</div>`:
-    snapshots.map(d=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0f0f0">
-      <span style="font-size:13px;font-weight:700;color:#374151">📅 ${d} 스냅샷</span>
-      <button class="btn btn-sec btn-sm" onclick="restoreSnapshot('${d}')">↩ 복구</button>
-    </div>`).join('')}
+  <div id="snap_body" style="display:none;padding:12px 16px;border-top:1px solid #dcfce7">
+    ${snapshots.length===0?`<div style="font-size:12px;color:#9ca3af">저장된 스냅샷이 없습니다<br><small>오늘 접속 후 자동 저장됩니다</small></div>`:
+    snapshots.map(({d,meta})=>{
+      const isToday=d===today;
+      return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:0.5px solid #f0f4f0">
+        <div>
+          <div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">
+            <span style="font-size:13px;font-weight:700;color:#374151">📅 ${d}</span>
+            ${isToday?`<span style="font-size:9px;font-weight:700;background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px">오늘</span>`:''}
+          </div>
+          <div style="display:flex;gap:10px">
+            <span style="font-size:10px;color:#9ca3af">학생 <b style="color:#374151">${meta.students}명</b></span>
+            <span style="font-size:10px;color:#9ca3af">노선 <b style="color:#374151">${meta.routes}개</b></span>
+            <span style="font-size:10px;color:#9ca3af">교사 <b style="color:#374151">${meta.teachers}명</b></span>
+          </div>
+        </div>
+        <button class="btn btn-sec btn-sm" style="${isToday?'border-color:#86efac;color:#166534':''}" onclick="restoreSnapshot('${d}')">↩ 복구</button>
+      </div>`;
+    }).join('')}
   </div>
 </div>
-<div class="sep"></div>
 <div class="fg-row2">
   <div class="fg"><label>관리자 비밀번호 변경</label>
     <div style="display:flex;gap:7px"><input type="password" id="new_pw" placeholder="새 비밀번호"><button class="btn btn-pr btn-sm" onclick="changePw()">변경</button></div>
@@ -5455,6 +5482,9 @@ function el(id){return document.getElementById(id)}
 
 function restoreSnapshot(date){
   if(!confirm(`${date} 스냅샷으로 복구하시겠습니까?\n현재 데이터가 해당 날짜 데이터로 교체됩니다.`))return;
+  const pw=prompt('관리자 비밀번호를 입력하세요:');
+  if(pw===null)return;
+  if(pw!==S.db.settings?.adminPw){showToast('❌ 비밀번호가 틀렸습니다');return;}
   try{
     const data=localStorage.getItem('shuttle_snapshot_'+date);
     if(!data){showToast('❌ 스냅샷 데이터가 없습니다');return;}
