@@ -2936,6 +2936,7 @@ function buildChgRow(c,canUndo){
     </div>
     <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
       ${canPin?`<button class="btn btn-xs" style="background:#ede9fe;color:#7c3aed;border:none;border-radius:6px;padding:2px 7px;cursor:pointer;font-size:10px;font-weight:700;font-family:inherit" onclick="pinChangeToSchedule('${c.id}','${dk}')">📌${DAY_KO[dk]}요일</button>`:''}
+      ${canUndo&&S.adminMode&&!c.undone?`<button class="btn btn-xs" style="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:2px 7px;cursor:pointer;font-size:10px;font-weight:700;font-family:inherit" onclick="event.stopPropagation();undoChange('${S.date}','${c.id}')">✕ 취소</button>`:''}
     </div>
   </div>`;
 }
