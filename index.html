@@ -2834,6 +2834,7 @@ function buildStudentRow(s){
 // ─── CHANGES ───
 function buildChanges(date){
   const dk=getDK(date);
+  const sfil=S.schoolFilter||'all';
   // 해당 날짜 직접 등록된 변경
   const direct=getDayChanges(date);
   const active=direct.filter(c=>!c.undone);
@@ -2845,7 +2846,6 @@ function buildChanges(date){
     if(d===date)continue;
     for(const c of arr){
       if(!c.undone&&(c.type==='period_absent'||c.type==='period_individual')&&c.startDate<=date&&c.endDate>=date){
-        // 수업요일 필터
         const st=getStudent(c.studentId);
         const classDays=getStudentClassDays(st);
         if(classDays&&!classDays.includes(dk))continue;
@@ -2855,7 +2855,28 @@ function buildChanges(date){
   }
 
   const allActive=[...active,...periodFromOther];
-  const totalCount=allActive.length;
+
+  // 같은 학생·같은 type 중복 제거 (등원/하원 각각 저장된 결석 등을 1건으로 합침)
+  function dedup(list){
+    const seen=new Set();
+    return list.filter(c=>{
+      const key=c.studentId+'_'+c.type+(c.type==='period_absent'||c.type==='period_individual'?'_'+c.startDate:'');
+      if(seen.has(key))return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  // 학교 필터 적용
+  const filtered=dedup(sfil==='all'?allActive:allActive.filter(c=>{const st=getStudent(c.studentId);return st?.school===sfil;}));
+  const undoneFiltered=dedup(sfil==='all'?undone:undone.filter(c=>{const st=getStudent(c.studentId);return st?.school===sfil;}));
+  const totalCount=filtered.length;
+
+  const filterBar=`<div class="sf-bar" style="margin-bottom:12px">
+    ${[['all','전체'],['altiora','알티오라'],['petamus','페타무스'],['pangram','팬그램']].map(([k,l])=>
+      `<button class="sf-btn${sfil===k?' on':''}" data-k="${k}" onclick="setSchool('${k}')">${l}</button>`
+    ).join('')}
+  </div>`;
 
   return `<div class="card">
   <div class="card-hdr">
@@ -2863,9 +2884,10 @@ function buildChanges(date){
     <button class="btn btn-pr btn-sm" onclick="openChangeModal(null,null)">✚ 변경등록</button>
   </div>
   <div class="card-body">
-    ${allActive.length===0?`<div class="empty">변경된 내역이 없습니다</div>`:allActive.map(c=>buildChgRow(c,!c._fromDate)).join('')}
-    ${periodFromOther.length>0?`<div style="font-size:10px;color:#9ca3af;margin-top:8px;padding-top:8px;border-top:1px solid #f0f2f7">📅 기간 예약 변경 ${periodFromOther.length}건 포함</div>`:''}
-    ${undone.length>0?`<div style="font-size:11px;color:#9ca3af;margin-top:14px;margin-bottom:7px">── 취소된 변경 (${undone.length}건) ──</div>${undone.map(c=>buildChgRow(c,false)).join('')}`:''}
+    ${filterBar}
+    ${filtered.length===0?`<div class="empty">변경된 내역이 없습니다</div>`:filtered.map(c=>buildChgRow(c,!c._fromDate)).join('')}
+    ${periodFromOther.length>0&&sfil==='all'?`<div style="font-size:10px;color:#9ca3af;margin-top:8px;padding-top:8px;border-top:1px solid #f0f2f7">📅 기간 예약 변경 ${periodFromOther.filter(c=>{const st=getStudent(c.studentId);return sfil==='all'||st?.school===sfil;}).length}건 포함</div>`:''}
+    ${undoneFiltered.length>0?`<div style="font-size:11px;color:#9ca3af;margin-top:14px;margin-bottom:7px">── 취소된 변경 (${undoneFiltered.length}건) ──</div>${undoneFiltered.map(c=>buildChgRow(c,false)).join('')}`:''}
   </div></div>`;
 }
 
