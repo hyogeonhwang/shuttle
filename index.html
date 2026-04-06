@@ -5431,21 +5431,35 @@ function saveRouteEdit(rid){
 }
 
 function showChangeBanner(){
-  // 이미 배너가 있으면 타이머만 리셋
+  // 가장 최근 변경사항 가져오기
+  const todayChgs=getDayChanges(S.date).filter(c=>!c.undone);
+  let detailHtml='변경사항이 업데이트되었습니다';
+  if(todayChgs.length>0){
+    const latest=[...todayChgs].sort((a,b)=>(b.timestamp||0)-(a.timestamp||0))[0];
+    const st=getStudent(latest.studentId);
+    if(st){
+      const typeKO={absent:'결석',period_absent:'결석기간',individual:'개별등하원',individual_morning:'개별등원',individual_afternoon:'개별하원',bus_change:'호차이동',stop_change:'정류장변경'};
+      const typeBadgeColor={absent:'background:#fee2e2;color:#dc2626',period_absent:'background:#fee2e2;color:#dc2626',individual:'background:#ede9fe;color:#6d28d9',individual_morning:'background:#ede9fe;color:#6d28d9',individual_afternoon:'background:#ede9fe;color:#6d28d9',bus_change:'background:#fef3c7;color:#92400e',stop_change:'background:#fef3c7;color:#92400e'};
+      const typeLabel=typeKO[latest.type]||latest.type;
+      const badgeStyle=typeBadgeColor[latest.type]||'background:#e5e7eb;color:#374151';
+      const inputter=latest.inputter?`<span style="opacity:.8;font-size:11px">${latest.inputter} · </span>`:'';
+      const timeStr=latest.timestamp?new Date(latest.timestamp).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false}):'';
+      detailHtml=`${inputter}<span style="font-weight:900">${st.name}</span> <span style="font-size:11px;opacity:.8">(${st.cls})</span> <span style="font-size:10px;font-weight:800;padding:2px 7px;border-radius:7px;margin-left:4px;${badgeStyle}">${typeLabel}</span>${timeStr?`<span style="font-size:10px;opacity:.6;margin-left:8px">${timeStr}</span>`:''}`;
+    }
+  }
   let b=document.getElementById('change_banner');
   if(!b){
     b=document.createElement('div');
     b.id='change_banner';
-    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#2563eb;color:#fff;padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.25);animation:slideDown .3s ease';
-    b.innerHTML=`<span style="font-size:16px">🔔</span><span style="flex:1">변경사항이 업데이트되었습니다</span><button onclick="document.getElementById('change_banner').remove()" style="border:none;background:rgba(255,255,255,.25);color:#fff;border-radius:8px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit">확인</button>`;
+    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#1A3169;color:#fff;padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.25);animation:slideDown .3s ease';
     document.body.appendChild(b);
-    // 슬라이드다운 애니메이션 CSS
     if(!document.getElementById('banner_css')){
       const s=document.createElement('style');s.id='banner_css';
       s.textContent='@keyframes slideDown{from{transform:translateY(-100%)}to{transform:translateY(0)}}';
       document.head.appendChild(s);
     }
   }
+  b.innerHTML=`<span style="font-size:16px">📢</span><span style="flex:1">${detailHtml}</span><button onclick="document.getElementById('change_banner').remove()" style="border:none;background:rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;flex-shrink:0">확인</button>`;
   clearTimeout(b._timer);
   b._timer=setTimeout(()=>{if(b.parentNode)b.remove();},8000);
 }
