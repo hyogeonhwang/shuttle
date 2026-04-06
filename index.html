@@ -2231,7 +2231,7 @@ function buildAttendance(date,dk,wd){
         <td style="padding:8px 6px;font-size:12px;font-weight:700;color:${schoolCol};white-space:nowrap">${esc(cls)}</td>
         <td style="padding:8px 6px;font-size:12px;text-align:center;color:#374151">${r.total}</td>
         ${numCell(r.attend,r.attendNames,'출석','background:#dcfce7;color:#16a34a','✅')}
-        ${numCell(r.absent,r.absentNames,'결석','background:#fee2e2;color:#dc2626','😷')}
+        ${numCell(r.absent,r.absentNames,'결석','background:#fee2e2;color:#dc2626','🚫')}
         ${numCell(r.indivM,r.indivMNames,'개별등원','background:#e0e7ff;color:#4338ca','🌅')}
         ${numCell(r.indivA,r.indivANames,'개별하원','background:#f3e8ff;color:#7c3aed','🌇')}        <td style="padding:8px 6px;font-size:12px;max-width:160px">${changeTags||`<span style="color:#d1d5db;font-size:10px">-</span>`}</td>
       </tr>`;
