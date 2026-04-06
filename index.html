@@ -2498,10 +2498,15 @@ function buildBusCard(bus,date,dk,wd){
     if(sts.length>0){hasStudents=true;break;}
   }
   if(!hasStudents&&sfil!=='all')return '';
-  const chgCnt=getDayChanges(date).filter(c=>{
-    const st=getStudent(c.studentId);if(!st||c.undone)return false;
-    return busRoutes.some(r=>r.id===c.routeId);
-  }).length;
+  // 헤더 변경 건수: 해당 호차 탑승 학생 중 변경된 학생 수 (학생 기준 중복 제거)
+  const chgStudentIds=new Set();
+  busRoutes.forEach(r=>{
+    const sts=getRouteStudents(r.id,date);
+    sts.forEach(s=>{
+      if(s.state!=='normal'&&!s.isFixedOverride) chgStudentIds.add(s.id);
+    });
+  });
+  const chgCnt=chgStudentIds.size;
   const todayTeachers=[];
   busRoutes.forEach(r=>{
     getTeachersForRoute(r.id).forEach(t=>{if(!todayTeachers.find(x=>x.id===t.id))todayTeachers.push(t);});
