@@ -834,8 +834,8 @@ function initDB(){
           const prevArr=prevChgs[date]||[];
           for(const c of arr){
             const prev=prevArr.find(p=>p.id===c.id);
-            if(!prev){changedChg=c;isUndo=false;break;} // 새로 추가된 항목
-            if(!prev.undone&&c.undone){changedChg=c;isUndo=true;break;} // 취소된 항목
+            if(!prev){changedChg=c;isUndo=false;break;}
+            if(!prev.undone&&c.undone){changedChg=c;isUndo=true;break;}
           }
           if(changedChg)break;
         }
@@ -843,8 +843,8 @@ function initDB(){
         S.db.dailyChanges=newChgs;
         localStorage.setItem(DB_KEY, JSON.stringify(S.db));
         render();
+        // 실제 변경된 항목이 있을 때만 배너 표시
         if(changedChg) showChangeBannerWithDetail(changedChg, isUndo);
-        else showChangeBanner();
       });
 
       // students 실시간 리스닝 (신규 학생 등록 등 감지)
