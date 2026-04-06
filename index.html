@@ -1103,10 +1103,28 @@ function save(){
   if(USE_FIREBASE && _fbRef){
     _fbIgnoreUntil = Date.now() + 12000;
     _fbRef.set(S.db)
-      .then(()=>{ _fbIgnoreUntil = Date.now() + 2000; })
-      .catch(e=>console.warn('Firebase 저장 실패:', e));
+      .then(()=>{
+        _fbIgnoreUntil = Date.now() + 2000;
+        _fbSaveFailed = false;
+        const warn = document.getElementById('fb_save_warn');
+        if(warn) warn.style.display = 'none';
+      })
+      .catch(e=>{
+        console.warn('Firebase 저장 실패:', e);
+        _fbSaveFailed = true;
+        let warn = document.getElementById('fb_save_warn');
+        if(!warn){
+          warn = document.createElement('div');
+          warn.id = 'fb_save_warn';
+          warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
+          warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. 페이지를 새로고침하거나 관리자에게 문의하세요. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
+          document.body.appendChild(warn);
+        }
+        warn.style.display = 'block';
+      });
   }
 }
+let _fbSaveFailed = false;
 // 노선 시간: DB 저장값 우선, 없으면 ROUTE_DEFS 기본값
 function getRouteTime(rid){
   return (S.db.routeTimes&&S.db.routeTimes[rid])||ROUTE_DEFS.find(r=>r.id===rid)?.time||'';
@@ -1464,6 +1482,7 @@ function buildApp(){
     ${tabs.map(t=>`<div class="nav-it${tab===t.k?' on':''}" onclick="setTab('${t.k}')"><span class="nav-ic">${t.ic}</span>${t.lbl}</div>`).join('')}
   </div>
   <div class="sb-footer">
+    ${adminMode?`<button class="sb-admin-btn" style="margin-bottom:6px;background:rgba(196,229,138,.2);border:1.5px solid rgba(196,229,138,.4)" onclick="backupData()">💾 데이터 백업</button>`:''}
     <button class="sb-admin-btn" style="${adminMode?'background:#fee2e2;color:#dc2626;border:1.5px solid #fca5a5;':''}" onclick="toggleAdmin()">${adminMode?'🔓 관리자 모드 종료':'🔐 관리자 로그인'}</button>
     <div style="font-size:9px;opacity:.4;text-align:center;margin-top:6px">v4.6 · 2026</div>
   </div>
@@ -2909,7 +2928,7 @@ function buildChgRow(c,canUndo){
   return `<div class="chg-row ${c.type||''} ${c.undone?'undone':''}">
     <div class="chg-icon">${icons[c.type]||'❓'}</div>
     <div class="chg-info">
-      <div class="chg-nm">${esc(s.name)} <span style="font-size:10px;color:#9ca3af">${esc(s.cls)}</span>${timeStr?`<span style="font-size:10px;color:#c4c9d4;margin-left:5px">${timeStr}</span>`:''}</div>
+      <div class="chg-nm">${esc(s.name)} <span style="font-size:10px;color:#9ca3af">${esc(s.cls)}</span>${timeStr?`<span style="font-size:10px;color:#c4c9d4;margin-left:5px">${timeStr}</span>`:''}${c.inputter?`<span style="font-size:10px;font-weight:700;background:#f0f4ff;color:#1A3169;padding:1px 7px;border-radius:8px;margin-left:6px">${esc(c.inputter)}</span>`:''}</div>
       <div class="chg-ds">${esc(desc)}</div>
     </div>
     <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">
@@ -4237,7 +4256,13 @@ function buildChangeModal(d){
     <input id="m_notes" value="${esc(d.notes||'')}" placeholder="특이사항">
   </div>
 
-  <div class="btn-row">
+  <!-- ⑦ 입력자 -->
+  <div class="fg">
+    <label style="display:flex;align-items:center;gap:6px">입력자
+      <span style="font-size:9px;font-weight:400;color:#9ca3af">처음 한 번만 입력하면 자동 저장됩니다</span>
+    </label>
+    <input id="m_inputter" value="${esc(localStorage.getItem('shuttle_inputter')||'')}" placeholder="이름 또는 약칭 (예: 서지, Betty)" oninput="localStorage.setItem('shuttle_inputter',this.value)">
+  </div>
     <button class="btn btn-pr" onclick="saveChange()">✅ 저장</button>
     <button class="btn btn-sec" onclick="closeModal()">취소</button>
   </div>
@@ -5398,6 +5423,22 @@ function closeModal(){
 }
 function el(id){return document.getElementById(id)}
 
+function backupData(){
+  try{
+    const data=JSON.stringify(S.db, null, 2);
+    const blob=new Blob([data],{type:'application/json'});
+    const a=document.createElement('a');
+    const now=new Date();
+    const dateStr=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    a.href=URL.createObjectURL(blob);
+    a.download='shuttle_backup_'+dateStr+'.json';
+    a.click();
+    showToast('✅ 백업 파일이 다운로드됩니다 ('+dateStr+')');
+  }catch(e){
+    showToast('❌ 백업 실패: '+e.message);
+  }
+}
+
 function toggleAdmin(){
   if(S.adminMode){
     if(!confirm('관리자 모드를 종료하시겠습니까?'))return;
@@ -5617,10 +5658,11 @@ function saveChange(){
     const typeKO='결석';
     if(!confirm(`[${st.name}] 오늘 결석 처리하시겠습니까?\n등원+하원 모두 결석 처리됩니다.`))return;
     const notes=el('m_notes')?.value||'';
+    const inputter=el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'';
     const arr=getDayChanges(S.date);
     let filtered=arr.filter(c=>!(c.studentId===sid&&saveRids.includes(c.routeId)&&!c.undone));
     saveRids.forEach(r=>{
-      filtered.push({id:uid(),studentId:sid,routeId:r,type:'absent',notes,timestamp:Date.now(),undone:false});
+      filtered.push({id:uid(),studentId:sid,routeId:r,type:'absent',notes,inputter,timestamp:Date.now(),undone:false});
     });
     setDayChanges(S.date,filtered);
     S.lastChange={id:'multi',date:S.date,desc:`${st.name} 결석`};
@@ -5678,7 +5720,7 @@ function saveChange(){
   }
   if(ctype==='bus_change'&&!d.toRouteId){alert('이동할 노선을 선택하세요');return;}
   if(!confirm(`다음 변경사항을 저장하시겠습니까?\n\n${msg}`))return;
-  const chg={id:uid(),studentId:sid,routeId:ctype==='period_absent'?'all':rid,type:ctype,notes:el('m_notes')?.value||'',timestamp:Date.now(),undone:false};
+  const chg={id:uid(),studentId:sid,routeId:ctype==='period_absent'?'all':rid,type:ctype,notes:el('m_notes')?.value||'',inputter:el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'',timestamp:Date.now(),undone:false};
   if(ctype==='period_absent'){chg.startDate=el('m_sd')?.value;chg.endDate=el('m_ed')?.value;}
   if(ctype==='bus_change'){
     chg.toRouteId=d.toRouteId;
