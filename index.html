@@ -822,9 +822,9 @@ function initDB(){
       const chgRef=_fbDb.ref('shuttle_v4/dailyChanges');
       chgRef.on('value', snap=>{
         if(!chgListenerReady){
-          // 초기 로드: 현재 있는 모든 변경 ID를 "이미 본 것"으로 등록
+          // 초기 로드: 현재 있는 모든 변경 ID와 상태를 "이미 본 것"으로 등록
           const initChgs=snap.val()||{};
-          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id){_shownBannerIds.add(c.id+':undone:0');_shownBannerIds.add(c.id+':undone:1');}});});
+          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id)_shownBannerIds.add(c.id+':undone:'+(c.undone?'1':'0'));});});
           chgListenerReady=true;
           return;
         }
@@ -1175,7 +1175,29 @@ function getTeachersForRoute(rid){
 // BUSINESS LOGIC
 // ══════════════════════════════════════════════════════
 function getDayChanges(date){return S.db.dailyChanges[date]||[]}
-function setDayChanges(date,arr){S.db.dailyChanges[date]=arr;save()}
+function setDayChanges(date,arr){
+  S.db.dailyChanges[date]=arr;
+  localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+  // dailyChanges만 별도로 저장 → 다른 데이터 저장 시 리스너 트리거 방지
+  if(USE_FIREBASE && _fbDb){
+    _fbIgnoreUntil = Date.now() + 15000;
+    _fbDb.ref('shuttle_v4/dailyChanges/'+date).set(arr)
+      .then(()=>{ _fbIgnoreUntil = Date.now() + 3000; })
+      .catch(e=>{
+        console.warn('dailyChanges 저장 실패:', e);
+        _fbSaveFailed = true;
+        let warn = document.getElementById('fb_save_warn');
+        if(!warn){
+          warn = document.createElement('div');
+          warn.id = 'fb_save_warn';
+          warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
+          warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
+          document.body.appendChild(warn);
+        }
+        warn.style.display = 'block';
+      });
+  }
+}
 
 function getActiveChg(date,studentId,routeId){
   const chgs=getDayChanges(date).filter(c=>c.studentId===studentId&&!c.undone);
