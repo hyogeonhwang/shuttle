@@ -1103,10 +1103,10 @@ function save(){
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
-    _fbIgnoreUntil = Date.now() + 12000;
+    _fbIgnoreUntil = Date.now() + 15000;
     _fbRef.set(S.db)
       .then(()=>{
-        _fbIgnoreUntil = Date.now() + 2000;
+        _fbIgnoreUntil = Date.now() + 3000;
         _fbSaveFailed = false;
         const warn = document.getElementById('fb_save_warn');
         if(warn) warn.style.display = 'none';
