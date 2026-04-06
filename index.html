@@ -804,6 +804,8 @@ function initDB(){
       if(fbData && fbData.students){
         S.db = fbData;
         migrateDB();
+        // 자동 스냅샷 저장 (매 접속시)
+        autoSnapshot();
       } else {
         const saved = localStorage.getItem(DB_KEY);
         if(saved){try{S.db=JSON.parse(saved);}catch(e){S.db=JSON.parse(JSON.stringify(PRESET_DB));}}
@@ -3787,7 +3789,34 @@ function updateClass(school,idx,val){
 
 function buildSettingsSystem(){
   const year=new Date().getFullYear();
+  // 스냅샷 목록
+  const snapshots=[];
+  for(let i=0;i<localStorage.length;i++){
+    const k=localStorage.key(i);
+    if(k&&k.startsWith('shuttle_snapshot_')){
+      snapshots.push(k.replace('shuttle_snapshot_',''));
+    }
+  }
+  snapshots.sort().reverse();
+
   return `
+<div style="border:2px solid #dcfce7;border-radius:10px;overflow:hidden;margin-bottom:16px">
+  <div style="background:#f0fdf4;padding:12px 16px;border-bottom:1px solid #dcfce7;display:flex;align-items:center;gap:8px">
+    <span style="font-size:18px">🛡️</span>
+    <div>
+      <div style="font-size:13px;font-weight:900;color:#166534">자동 스냅샷 복구</div>
+      <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 자동 저장됩니다. 최근 7일치 보관.</div>
+    </div>
+  </div>
+  <div style="padding:14px 16px">
+    ${snapshots.length===0?`<div style="font-size:12px;color:#9ca3af">저장된 스냅샷이 없습니다</div>`:
+    snapshots.map(d=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid #f0f0f0">
+      <span style="font-size:13px;font-weight:700;color:#374151">📅 ${d} 스냅샷</span>
+      <button class="btn btn-sec btn-sm" onclick="restoreSnapshot('${d}')">↩ 복구</button>
+    </div>`).join('')}
+  </div>
+</div>
+<div class="sep"></div>
 <div class="fg-row2">
   <div class="fg"><label>관리자 비밀번호 변경</label>
     <div style="display:flex;gap:7px"><input type="password" id="new_pw" placeholder="새 비밀번호"><button class="btn btn-pr btn-sm" onclick="changePw()">변경</button></div>
@@ -5422,6 +5451,37 @@ function closeModal(){
   render();
 }
 function el(id){return document.getElementById(id)}
+
+function restoreSnapshot(date){
+  if(!confirm(`${date} 스냅샷으로 복구하시겠습니까?\n현재 데이터가 해당 날짜 데이터로 교체됩니다.`))return;
+  try{
+    const data=localStorage.getItem('shuttle_snapshot_'+date);
+    if(!data){showToast('❌ 스냅샷 데이터가 없습니다');return;}
+    S.db=JSON.parse(data);
+    save();
+    showToast('✅ '+date+' 스냅샷으로 복구 완료');
+    render();
+  }catch(e){showToast('❌ 복구 실패: '+e.message);}
+}
+
+function autoSnapshot(){
+  try{
+    const now=new Date();
+    const key='shuttle_snapshot_'+now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    // 오늘 스냅샷이 이미 있으면 저장 안 함
+    if(!localStorage.getItem(key)){
+      localStorage.setItem(key, JSON.stringify(S.db));
+      // 7일 이전 스냅샷 자동 삭제
+      for(let i=0;i<localStorage.length;i++){
+        const k=localStorage.key(i);
+        if(k&&k.startsWith('shuttle_snapshot_')){
+          const d=new Date(k.replace('shuttle_snapshot_',''));
+          if((now-d)>7*24*60*60*1000){localStorage.removeItem(k);i--;}
+        }
+      }
+    }
+  }catch(e){console.warn('스냅샷 저장 실패:',e);}
+}
 
 function backupData(){
   try{
