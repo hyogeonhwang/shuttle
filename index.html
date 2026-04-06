@@ -817,10 +817,17 @@ function initDB(){
 
       // dailyChanges만 실시간 리스닝 (다른 사람 변경 감지)
       // 초기 로드 시 리스너 첫 실행은 무시
+      const _shownBannerIds=new Set(); // 이미 배너로 보여준 변경 ID 기억
       let chgListenerReady=false;
       const chgRef=_fbDb.ref('shuttle_v4/dailyChanges');
       chgRef.on('value', snap=>{
-        if(!chgListenerReady){chgListenerReady=true;return;} // 최초 1회 무시
+        if(!chgListenerReady){
+          // 초기 로드: 현재 있는 모든 변경 ID를 "이미 본 것"으로 등록
+          const initChgs=snap.val()||{};
+          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id)_shownBannerIds.add(c.id+':undone:'+(c.undone?'1':'0'));});});
+          chgListenerReady=true;
+          return;
+        }
         if(Date.now() < _fbIgnoreUntil) return;
         const newChgs=snap.val();
         if(!newChgs) return;
@@ -846,8 +853,14 @@ function initDB(){
         S.db.dailyChanges=newChgs;
         localStorage.setItem(DB_KEY, JSON.stringify(S.db));
         render();
-        // 실제 변경된 항목이 있을 때만 배너 표시
-        if(changedChg) showChangeBannerWithDetail(changedChg, isUndo);
+        // 실제 변경된 항목이 있고 아직 안 보여준 것만 배너 표시
+        if(changedChg){
+          const bannerKey=changedChg.id+':undone:'+(isUndo?'1':'0');
+          if(!_shownBannerIds.has(bannerKey)){
+            _shownBannerIds.add(bannerKey);
+            showChangeBannerWithDetail(changedChg, isUndo);
+          }
+        }
       });
 
       // students 실시간 리스닝 (신규 학생 등록 등 감지)
