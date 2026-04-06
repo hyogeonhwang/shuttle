@@ -824,7 +824,7 @@ function initDB(){
         if(!chgListenerReady){
           // 초기 로드: 현재 있는 모든 변경 ID를 "이미 본 것"으로 등록
           const initChgs=snap.val()||{};
-          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id)_shownBannerIds.add(c.id+':undone:'+(c.undone?'1':'0'));});});
+          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id){_shownBannerIds.add(c.id+':undone:0');_shownBannerIds.add(c.id+':undone:1');}});});
           chgListenerReady=true;
           return;
         }
