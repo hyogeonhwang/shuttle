@@ -2181,7 +2181,7 @@ function buildAttendance(date,dk,wd){
       attendNames.push(st.name);
     });
 
-    // 오늘 변동 (당일 등록된 것만, 중복 제거)
+    // 오늘 변동 (당일 등록된 것만, 중복 제거 + 기간결석 중인 학생 포함)
     const changes=[];
     const seenChg=new Set();
     todayChgs.forEach(c=>{
@@ -2199,6 +2199,20 @@ function buildAttendance(date,dk,wd){
       const cls2=type==='결석'?'tag-absent':type==='개별'?'tag-indiv':'tag-change';
       const memo=c.notes||'';
       changes.push({name:st.name,type,cls:cls2,memo});
+    });
+    // 기간결석 중인 학생도 오늘 변동에 추가
+    stus.forEach(st=>{
+      if(seenChg.has(st.id+'_결석'))return;
+      for(const [,arr] of Object.entries(S.db.dailyChanges||{})){
+        for(const c of arr){
+          if(c.studentId===st.id&&c.type==='period_absent'&&!c.undone&&c.startDate<=date&&c.endDate>=date){
+            seenChg.add(st.id+'_결석');
+            changes.push({name:st.name,type:'결석',cls:'tag-absent',memo:`기간결석(~${c.endDate})`});
+            break;
+          }
+        }
+        if(seenChg.has(st.id+'_결석'))break;
+      }
     });
 
     return{total,attend,absent,indivM,indivA,absentNames,indivMNames,indivANames,attendNames,changes};
