@@ -2422,13 +2422,13 @@ function buildWeeklyException(sfil){
   const tagBadge=(t)=>{
     let col;
     if(t.type==='absent'){
-      col='background:#FCEBEB;color:#A32D2D';
+      col='background:#fee2e2;color:#991b1b;font-weight:700';
     } else if(t.label.includes('등원')){
-      col='background:#EAF0F8;color:#2C4A7C'; // 파랑 - 등원
+      col='background:#dbeafe;color:#1e40af;font-weight:700'; // 파랑 - 등원
     } else {
-      col='background:#E8F5E9;color:#1B5E20'; // 초록 - 하원
+      col='background:#dcfce7;color:#166534;font-weight:700'; // 초록 - 하원
     }
-    return `<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:500;${col};white-space:nowrap">${t.label}</span>`;
+    return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;${col};white-space:nowrap">${t.label}</span>`;
   };
 
   return `
