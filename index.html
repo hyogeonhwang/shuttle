@@ -398,6 +398,9 @@ const ALL_DAYS=DAYS;
 const SCHOOL_KO={altiora:'알티오라',petamus:'페타무스',pangram:'팬그램'};
 const BUS_COLORS={'2':'#9c27b0','3':'#673ab7','5':'#1565c0','7':'#2e7d32','8':'#bf360c'};
 const DB_KEY='shuttle_v4';
+const SMS_CONFIG = {
+  functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
+};
 
 // ── ROUTE DEFINITIONS ──
 // Each route is an independent operation: bus + time slot + days
@@ -1640,8 +1643,10 @@ function buildBusRouteRows(busRoutes,date,sfil){
   <div style="padding:8px 13px 12px;background:#fff">
     ${(S.db.routeMemo?.[r.id])?`<div style="font-size:10px;color:#6b7280;margin-bottom:7px;padding:4px 8px;background:#fffbeb;border-radius:5px;border-left:3px solid #f59e0b">💬 ${esc(S.db.routeMemo[r.id])}</div>`:''}
     ${buildStopGroups(sts,date,rCol)}
-    <div style="margin-top:8px;text-align:right">
+    <div style="margin-top:8px;text-align:right;display:flex;justify-content:flex-end;gap:6px">
       <button class="btn btn-sec btn-xs" onclick="event.stopPropagation();openChangeModal(null,'${r.id}')">✚ 변경등록</button>
+      ${r.dir==='morning'?`<button onclick="event.stopPropagation();sendArrivalSMS('${r.id}','${date}')"
+        style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>`:''}
     </div>
   </div>`}
 </div>`);
@@ -1873,6 +1878,10 @@ function buildTeacherView(date,dk,wd){
       }).join('')}
     </div>`).join('')}
   </div>
+  ${r.dir==='morning'?`<div style="padding:8px 15px 12px;text-align:right">
+    <button onclick="sendArrivalSMS('${r.id}','${date}')"
+      style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>
+  </div>`:''}
 `:''}
 </div>`;
   }).join('');
@@ -2871,6 +2880,8 @@ function buildRoutes(date,dk){
           ${!activeToday?`<div class="note note-warn">오늘(${DAY_KO[dk]}요일)은 이 노선 운행일이 아닙니다</div>`:''}
           ${am?`<div style="margin-bottom:10px;display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-pr btn-sm" onclick="openChangeModal(null,'${r.id}')">✚ 변경등록</button>
+            ${r.dir==='morning'?`<button onclick="sendArrivalSMS('${r.id}','${date}')"
+              style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>`:''}
           </div>`:''}
           ${buildStopGroups(sts,date,rCol)}
         </div>`:''}
@@ -6140,6 +6151,97 @@ function undoLastChange(){
   S.lastChange=null;
   render();
 }
+async function sendArrivalSMS(routeId, date){
+  if(!SMS_CONFIG.functionUrl||SMS_CONFIG.functionUrl.includes('YOUR_CLOUD')){
+    showToast('❌ Cloud Function URL을 설정하세요 (SMS_CONFIG)');return;
+  }
+  const route=getRoute(routeId);
+  if(!route)return;
+  const routeLabel=getRouteLabel(routeId);
+  const today=date||S.date;
+  const allStudents=getRouteStudents(routeId,today);
+  const activeStudents=allStudents.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg');
+  if(activeStudents.length===0){showToast('⚠️ 오늘 탑승 학생이 없습니다');return;}
+
+  const targets=activeStudents.map(s=>({
+    id:s.id, name:s.name, phone:s.phone||'',
+    hasPhone:s.phone&&s.phone.trim().length>9,
+    school:s.school||'altiora'
+  }));
+
+  // 모달 생성
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:14px;padding:20px;max-width:340px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <span style="font-size:14px;font-weight:900;color:#1A2A4A">🔔 등원 알림 발송</span>
+      <button id="sms_close" style="border:none;background:none;font-size:22px;cursor:pointer;color:#9ca3af;line-height:1">×</button>
+    </div>
+    <div style="font-size:11px;color:#9ca3af;margin-bottom:10px">${routeLabel} · 발송할 학생을 선택하세요</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;padding-bottom:8px;border-bottom:1px solid #f0f2f7">
+      <input type="checkbox" id="sms_all" checked style="cursor:pointer;width:15px;height:15px">
+      <label for="sms_all" style="font-size:12px;font-weight:700;cursor:pointer;color:#1A2A4A">전체 선택</label>
+    </div>
+    <div style="overflow-y:auto;flex:1;margin-bottom:14px">
+      ${targets.map(t=>`
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:0.5px solid #f9fafb">
+        <input type="checkbox" id="sms_${t.id}" ${t.hasPhone?'checked':'disabled'} data-phone="${t.phone}" data-name="${t.name}" data-school="${t.school}"
+          style="cursor:${t.hasPhone?'pointer':'not-allowed'};width:15px;height:15px" class="sms-chk">
+        <label for="sms_${t.id}" style="flex:1;font-size:12px;cursor:${t.hasPhone?'pointer':'not-allowed'};color:${t.hasPhone?'#1e293b':'#9ca3af'}">
+          ${t.name}
+        </label>
+        ${!t.hasPhone?`<span style="font-size:10px;color:#ef4444">연락처없음</span>`:`<span style="font-size:10px;color:#9ca3af">${t.phone}</span>`}
+      </div>`).join('')}
+    </div>
+    <button id="sms_send" style="width:100%;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:11px;font-size:13px;font-weight:900;cursor:pointer;font-family:inherit">
+      📤 발송하기
+    </button>
+  </div>`;
+
+  document.body.appendChild(modal);
+  modal.onclick=e=>{if(e.target===modal)modal.remove();};
+  document.getElementById('sms_close').onclick=()=>modal.remove();
+
+  // 전체선택 토글
+  document.getElementById('sms_all').onchange=function(){
+    modal.querySelectorAll('.sms-chk:not(:disabled)').forEach(c=>c.checked=this.checked);
+  };
+  modal.querySelectorAll('.sms-chk').forEach(c=>{
+    c.onchange=()=>{
+      const all=modal.querySelectorAll('.sms-chk:not(:disabled)');
+      const checked=modal.querySelectorAll('.sms-chk:not(:disabled):checked');
+      document.getElementById('sms_all').checked=all.length===checked.length;
+    };
+  });
+
+  // 발송
+  document.getElementById('sms_send').onclick=async()=>{
+    const selected=[...modal.querySelectorAll('.sms-chk:checked')].map(c=>({
+      name:c.dataset.name, phone:c.dataset.phone, school:c.dataset.school
+    }));
+    if(selected.length===0){showToast('⚠️ 발송할 학생을 선택하세요');return;}
+    modal.remove();
+    showToast('📤 발송 중...');
+    const now=new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false});
+    try{
+      const response=await fetch(SMS_CONFIG.functionUrl,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({students:selected,routeLabel,arrivalTime:now}),
+      });
+      const result=await response.json();
+      if(result.success){
+        showToast(`✅ 발송 완료 ${result.sent}명`+(result.failed>0?` / 실패 ${result.failed}명`:''));
+        if(result.failed>0)alert(`⚠️ 발송 실패 ${result.failed}명:\n${result.errors.map(e=>`${e.name}(${e.reason})`).join(', ')}`);
+      } else {
+        showToast('❌ 발송 실패: '+(result.error||'알 수 없는 오류'));
+      }
+    } catch(err){
+      showToast('❌ 네트워크 오류: '+err.message);
+    }
+  };
+}
+
 function undoChange(date,cid){
   const arr=getDayChanges(date);
   const chg=arr.find(c=>c.id===cid);
