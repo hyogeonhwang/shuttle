@@ -2200,14 +2200,19 @@ function buildAttendance(date,dk,wd){
       if(!st)return;
       let type='';
       if(c.type==='absent'||c.type==='period_absent')type='결석';
-      else if(c.type==='individual')type='개별';
+      else if(c.type==='individual'){
+        const dir=c.dir||'both';
+        if(dir==='morning') type='개별등원';
+        else if(dir==='afternoon') type='개별하원';
+        else type='개별(등+하)';
+      }
       else if(c.type==='bus_change')type='호차이동';
       else if(c.type==='stop_change')type='정류장변경';
       else return;
       const key=st.id+'_'+type;
       if(seenChg.has(key))return;
       seenChg.add(key);
-      const cls2=type==='결석'?'tag-absent':type==='개별'?'tag-indiv':'tag-change';
+      const cls2=type==='결석'?'tag-absent':type.includes('개별')?'tag-indiv':'tag-change';
       const memo=c.notes||'';
       changes.push({name:st.name,type,cls:cls2,memo});
     });
