@@ -2201,8 +2201,25 @@ function buildAttendance(date,dk,wd){
       let type='';
       if(c.type==='absent'||c.type==='period_absent')type='결석';
       else if(c.type==='individual'){
+        // 같은 학생의 개별 변경이 이미 있으면 등+하로 합치기
+        const existKey1=seenChg.has(st.id+'_개별등원');
+        const existKey2=seenChg.has(st.id+'_개별하원');
+        const existKeyBoth=seenChg.has(st.id+'_개별(등+하)');
         const dir=c.dir||'both';
-        if(dir==='morning') type='개별등원';
+        if(existKeyBoth) return;
+        if(dir==='morning'&&existKey2){
+          // 하원이 이미 있으면 둘 다 지우고 등+하로
+          const idx=changes.findIndex(x=>x.name===st.name&&x.type==='개별하원');
+          if(idx>-1)changes.splice(idx,1);
+          seenChg.delete(st.id+'_개별하원');
+          type='개별(등+하)';
+        } else if(dir==='afternoon'&&existKey1){
+          // 등원이 이미 있으면 둘 다 지우고 등+하로
+          const idx=changes.findIndex(x=>x.name===st.name&&x.type==='개별등원');
+          if(idx>-1)changes.splice(idx,1);
+          seenChg.delete(st.id+'_개별등원');
+          type='개별(등+하)';
+        } else if(dir==='morning') type='개별등원';
         else if(dir==='afternoon') type='개별하원';
         else type='개별(등+하)';
       }
