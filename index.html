@@ -1912,9 +1912,11 @@ function buildToday(date,dk,wd){
 <div style="display:flex;border-bottom:2px solid var(--border);background:#fff;margin-bottom:10px">
   <div onclick="S._todaySubTab='main';render()" style="padding:8px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${subTab==='main'?'var(--pr)':'transparent'};color:${subTab==='main'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">전체 현황</div>
   <div onclick="S._todaySubTab='cls';render()" style="padding:8px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${subTab==='cls'?'var(--pr)':'transparent'};color:${subTab==='cls'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">📋 반별 현황</div>
+  <div onclick="S._todaySubTab='weekly';render()" style="padding:8px 16px;cursor:pointer;font-size:12px;font-weight:700;border-bottom:2px solid ${subTab==='weekly'?'var(--pr)':'transparent'};color:${subTab==='weekly'?'var(--pr)':'#9ca3af'};margin-bottom:-2px;white-space:nowrap">📅 주간 예외 현황</div>
 </div>`;
 
   if(subTab==='cls') return topBar+buildTodayCls(date,dk);
+  if(subTab==='weekly') return topBar+buildWeeklyException(sfil);
 
   return topBar+`
 <div style="display:flex;gap:7px;align-items:center;margin-bottom:8px" class="no-print">
@@ -2220,10 +2222,12 @@ function buildAttendance(date,dk,wd){
 
   // 전체 합계
   let totTotal=0,totAttend=0,totAbsent=0,totChanges=0;
+  const allAbsentNames=[];
   const rows=clsList.map(({cls,school})=>{
     const r=calcCls(cls);
     if(!r||r.total===0)return null;
     totTotal+=r.total;totAttend+=r.attend;totAbsent+=r.absent;totChanges+=r.changes.length;
+    allAbsentNames.push(...(r.absentNames||[]));
     return{cls,school,r};
   }).filter(Boolean);
 
@@ -2256,18 +2260,23 @@ function buildAttendance(date,dk,wd){
 
 <!-- 전체 요약 -->
 <div style="display:flex;gap:8px;padding:12px 12px 0">
-  ${[
-    ['전체 정원',totTotal,'#1A3169'],
-    ['출석',totAttend,'#16a34a'],
-    ['결석',totAbsent,'#dc2626'],
-    ['오늘 변동',totChanges,'#d97706'],
-  ].map(([l,v,c])=>`
-  <div style="flex:1;background:#fff;border-radius:9px;padding:10px 8px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08)">
-    <div style="font-size:20px;font-weight:900;color:${c}">${v}</div>
-    <div style="font-size:9px;color:#9ca3af;margin-top:2px">${l}</div>
-  </div>`).join('')}
+  <div style="flex:1;background:#fff;border-radius:9px;padding:11px 13px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+    <div style="font-size:22px;font-weight:900;color:#1A3169">${totTotal}</div>
+    <div style="font-size:10px;color:#9ca3af;margin-top:1px;font-weight:700">전체 정원</div>
+  </div>
+  <div style="flex:1;background:#fff;border-radius:9px;padding:11px 13px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+    <div style="font-size:22px;font-weight:900;color:#16a34a">${totAttend}</div>
+    <div style="font-size:10px;color:#9ca3af;margin-top:1px;font-weight:700">출석</div>
+  </div>
+  <div id="cls_absent_box" data-names="${encodeURIComponent(JSON.stringify(allAbsentNames))}" style="flex:1;background:#fff;border-radius:9px;padding:11px 13px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08);${totAbsent>0?'cursor:pointer;':''}" onclick="if(${totAbsent}>0){showClsAbsentPopup(JSON.parse(decodeURIComponent(this.dataset.names)));}" title="${totAbsent>0?'클릭하면 결석 학생 확인':''}">
+    <div style="font-size:22px;font-weight:900;color:#dc2626">${totAbsent}</div>
+    <div style="font-size:10px;color:${totAbsent>0?'#dc2626':'#9ca3af'};margin-top:1px;font-weight:700;${totAbsent>0?'text-decoration:underline dotted;':''}">결석${totAbsent>0?' ▸':''}</div>
+  </div>
+  <div style="flex:1;background:#fff;border-radius:9px;padding:11px 13px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.08);${totChanges>0?'cursor:pointer;':''}" onclick="${totChanges>0?`showTodayChangesPopup('${date}')`:''}" title="${totChanges>0?'클릭하면 변경내역 확인':''}">
+    <div style="font-size:22px;font-weight:900;color:#d97706">${totChanges}</div>
+    <div style="font-size:10px;color:${totChanges>0?'#d97706':'#9ca3af'};margin-top:1px;font-weight:700;${totChanges>0?'text-decoration:underline dotted;':''}">오늘 변동${totChanges>0?' ▸':''}</div>
+  </div>
 </div>
-
 <!-- 반별 테이블 -->
 <div style="padding:12px">
 <div class="card">
@@ -2327,6 +2336,128 @@ function buildAttendance(date,dk,wd){
 </div>`;
 }
 
+function buildWeeklyException(sfil){
+  const DAYS=['mon','tue','wed','thu','fri'];
+  const DAY_KO={mon:'월',tue:'화',wed:'수',thu:'목',fri:'금'};
+  const onlyEx=true;
+
+  const allStu=S.db.students.filter(s=>s.active&&(sfil==='all'||s.school===sfil));
+
+  const rows=allStu.map(st=>{
+    const cells={};
+    let hasEx=false;
+    const def=st.daySchedules?.default||{};
+    const defMRid=def?.morning?.routeId||'';
+    const defARid=def?.afternoon?.routeId||'';
+
+    // 이 학생의 정기 결석 요일 수 파악 (화목반→월수금 결석 등)
+    const regularAbsentDays=DAYS.filter(dk=>{
+      const ov=st.daySchedules?.[dk];
+      if(!ov)return false;
+      const m=ov?.morning?.routeId||'';
+      const a=ov?.afternoon?.routeId||'';
+      return m==='__absent__'&&a==='__absent__';
+    });
+    // 정기 결석이 2일 이상이면 그 요일들은 예외가 아닌 정규 패턴
+    const isRegularAbsent=(dk)=>regularAbsentDays.length>=2&&regularAbsentDays.includes(dk);
+
+    DAYS.forEach(dk=>{
+      const dayOverride=st.daySchedules?.[dk];
+      if(!dayOverride){cells[dk]=[];return;}
+
+      const mRid=dayOverride?.morning?.routeId||'';
+      const aRid=dayOverride?.afternoon?.routeId||'';
+
+      // 정기 결석 요일은 예외로 표시 안 함
+      if(mRid==='__absent__'&&aRid==='__absent__'&&isRegularAbsent(dk)){
+        cells[dk]=[];return;
+      }
+
+      const tags=[];
+
+      // 등원 예외 (개별등원 제외)
+      if(mRid!==defMRid&&mRid!=='__individual__'){
+        if(mRid==='__absent__'&&defMRid!=='__absent__'){
+          tags.push({type:'absent',label:'등원 미탑승'});
+        } else if(mRid&&mRid!=='__absent__'){
+          const r=getRoute(mRid);
+          const busLabel=r?`${r.busId}호차`:(getRouteLabel(mRid)||mRid);
+          tags.push({type:'bus',label:busLabel+' 등원'});
+        }
+      }
+
+      // 하원 예외 (개별하원 제외)
+      if(aRid!==defARid&&aRid!=='__individual__'){
+        if(aRid==='__absent__'&&defARid!=='__absent__'){
+          tags.push({type:'absent',label:'하원 미탑승'});
+        } else if(aRid&&aRid!=='__absent__'){
+          const r=getRoute(aRid);
+          const busLabel=r?`${r.busId}호차`:(getRouteLabel(aRid)||aRid);
+          tags.push({type:'bus',label:busLabel+' 하원'});
+        }
+      }
+
+      // 등원+하원 모두 미탑승이고 정규패턴 아닌 경우 합치기
+      if(mRid==='__absent__'&&aRid==='__absent__'&&!isRegularAbsent(dk)&&defMRid!=='__absent__'){
+        cells[dk]=[{type:'absent',label:'미탑승'}];
+        hasEx=true;
+        return;
+      }
+
+      cells[dk]=tags;
+      if(tags.length>0)hasEx=true;
+    });
+    return{st,cells,hasEx};
+  }).filter(r=>!onlyEx||r.hasEx);
+
+  const tagBadge=(t)=>{
+    let col;
+    if(t.type==='absent'){
+      col='background:#FCEBEB;color:#A32D2D';
+    } else if(t.label.includes('등원')){
+      col='background:#EAF0F8;color:#2C4A7C'; // 파랑 - 등원
+    } else {
+      col='background:#E8F5E9;color:#1B5E20'; // 초록 - 하원
+    }
+    return `<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:500;${col};white-space:nowrap">${t.label}</span>`;
+  };
+
+  return `
+<div style="display:flex;align-items:center;margin-bottom:12px">
+  <span style="font-size:11px;color:#9ca3af">${rows.length}명</span>
+</div>
+<div style="overflow-x:auto">
+<table style="width:100%;border-collapse:collapse;font-size:12px;min-width:560px">
+  <thead>
+    <tr>
+      <th style="background:#1A2A4A;color:#fff;padding:8px 10px;font-weight:500;text-align:left;font-size:11px;min-width:110px">학생</th>
+      ${DAYS.map(dk=>`<th style="background:#1A2A4A;color:#fff;padding:8px 6px;font-weight:500;text-align:center;font-size:11px;min-width:90px">${DAY_KO[dk]}</th>`).join('')}
+    </tr>
+  </thead>
+  <tbody>
+    ${rows.length===0?`<tr><td colspan="6" style="text-align:center;padding:24px;color:#9ca3af;font-size:12px">예외 설정된 학생이 없습니다</td></tr>`:
+    rows.map(({st,cells})=>`
+    <tr style="border-bottom:0.5px solid var(--border)">
+      <td style="padding:7px 10px;vertical-align:middle">
+        <div style="font-size:12px;color:var(--text)">${st.name}</div>
+        <div style="font-size:10px;color:#9ca3af">${st.cls||''} · ${st.school==='altiora'?'알티오라':st.school==='petamus'?'페타무스':'팬그램'}</div>
+      </td>
+      ${DAYS.map(dk=>`
+      <td style="padding:6px 5px;text-align:center;vertical-align:middle">
+        ${cells[dk].length>0?cells[dk].map(t=>tagBadge(t)).join('<br>'):`<span style="color:#d1d5db;font-size:11px">-</span>`}
+      </td>`).join('')}
+    </tr>`).join('')}
+  </tbody>
+</table>
+</div>
+<div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;font-size:11px;color:#9ca3af;align-items:center">
+  <span style="font-weight:500">범례</span>
+  <span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;background:#FCEBEB;color:#A32D2D">미탑승</span>
+  <span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;background:#EAF0F8;color:#2C4A7C">등원 변경</span>
+  <span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;background:#E8F5E9;color:#1B5E20">하원 변경</span>
+</div>`;
+}
+
 function buildStatsRow(date){
   const active=S.db.students.filter(s=>isActiveOnDate(s, date));
   const filt=S.schoolFilter==='all'?active:active.filter(s=>s.school===S.schoolFilter);
@@ -2341,6 +2472,22 @@ function buildStatsRow(date){
 </div>`;
 }
 
+
+function showClsAbsentPopup(names){
+  const html=names.length===0?'<div style="color:#9ca3af;font-size:12px;text-align:center;padding:12px">결석 학생 없음</div>':
+    names.map(n=>`<div style="padding:5px 0;font-size:13px;border-bottom:0.5px solid #f0f2f7;color:#dc2626">🚫 ${n}</div>`).join('');
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;padding:20px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:14px;padding:18px;max-width:300px;width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <span style="font-size:13px;font-weight:900;color:#dc2626">🚫 오늘 결석 (${names.length}명)</span>
+      <button onclick="this.closest('[style*=fixed]').remove()" style="border:none;background:none;font-size:20px;cursor:pointer;color:#9ca3af">×</button>
+    </div>
+    ${html}
+  </div>`;
+  modal.onclick=e=>{if(e.target===modal)modal.remove();};
+  document.body.appendChild(modal);
+}
 
 function showTodayChangesPopup(date, filterChgId){
   const dk=getDK(date);
@@ -4652,7 +4799,7 @@ function stopSelectBlock(rid,curStop,onChangeCb,uniqId,onTimeCb){
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
       <label style="margin:0">정류장</label>
       <button type="button" onclick="S['_directStop_${uniqId}']=${isDirect?'false':'true'};render()"
-        style="border:none;background:none;font-size:10px;color:var(--pr);cursor:pointer;text-decoration:underline;padding:0">
+        style="border:none;background:none;font-size:10px;color:var(--pr);cursor:pointer;text-decoration:underline dotted;padding:0">
         ${isDirect?'▲ 목록에서 선택':'✏️ 직접 입력'}
       </button>
     </div>
