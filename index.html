@@ -2490,12 +2490,52 @@ function buildWeeklyException(sfil){
 }
 
 function buildStatsRow(date){
+  const sfil=S.schoolFilter;
   const active=S.db.students.filter(s=>isActiveOnDate(s, date));
-  const filt=S.schoolFilter==='all'?active:active.filter(s=>s.school===S.schoolFilter);
-  const chgs=countTodayChanges(date);
+  const filt=sfil==='all'?active:active.filter(s=>s.school===sfil);
+  const dk=getDK(date);
+
+  // 노선 수: 해당 학교 학생이 탑승하는 노선만
+  const filtRouteIds=new Set();
+  INIT_BUSES.forEach(b=>{
+    getBusRoutes(b.id).filter(r=>routeActiveOnDay(r,dk)).forEach(r=>{
+      const sts=getRouteStudents(r.id,date);
+      const hasSchool=sfil==='all'||sts.some(s=>{const st=getStudent(s.id);return st&&st.school===sfil;});
+      if(hasSchool) filtRouteIds.add(r.id);
+    });
+  });
+  const routeCnt=filtRouteIds.size;
+
+  // 오늘 변경: 해당 학교 학생 기준
+  const chgs=sfil==='all'?countTodayChanges(date):(()=>{
+    const direct=getDayChanges(date).filter(c=>{
+      if(c.undone)return false;
+      const st=getStudent(c.studentId);
+      return st&&st.school===sfil;
+    });
+    const absentSeen=new Set();
+    const directCnt=direct.filter(c=>{
+      if(c.type==='absent'){if(absentSeen.has(c.studentId))return false;absentSeen.add(c.studentId);return true;}
+      return true;
+    }).length;
+    const periodCnt=Object.entries(S.db.dailyChanges||{}).reduce((cnt,[d,arr])=>{
+      if(d===date)return cnt;
+      return cnt+arr.filter(c=>{
+        if(c.undone)return false;
+        if(!(c.type==='period_absent'||c.type==='period_individual'))return false;
+        if(!(c.startDate<=date&&c.endDate>=date))return false;
+        const st=getStudent(c.studentId);
+        if(!st||st.school!==sfil)return false;
+        const classDays=getStudentClassDays(st);
+        if(classDays&&!classDays.includes(dk))return false;
+        return true;
+      }).length;
+    },0);
+    return directCnt+periodCnt;
+  })();
   return `<div class="stats-row">
   <div class="stat-box"><div class="stat-v">${filt.length}</div><div class="stat-l">학생</div></div>
-  <div class="stat-box"><div class="stat-v">${ROUTE_DEFS.length}</div><div class="stat-l">전체 노선</div></div>
+  <div class="stat-box"><div class="stat-v">${routeCnt}</div><div class="stat-l">전체 노선</div></div>
   <div class="stat-box" style="${chgs>0?'cursor:pointer;'  :''}" onclick="${chgs>0?`showTodayChangesPopup('${date}')`:''}" title="${chgs>0?'클릭하면 변경내역 확인':''}">
     <div class="stat-v" style="color:${chgs>0?'var(--warn)':'var(--pr)'}">${chgs}</div>
     <div class="stat-l" style="${chgs>0?'color:var(--warn);text-decoration:underline dotted;':''}">${chgs>0?'오늘 변경 ▸':'오늘 변경'}</div>
