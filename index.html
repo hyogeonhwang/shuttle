@@ -2254,10 +2254,36 @@ function buildAttendance(date,dk,wd){
   // 전체 합계
   let totTotal=0,totAttend=0,totAbsent=0,totChanges=0;
   const allAbsentNames=[];
+
+  // 오늘 변동: 학교 필터 기준으로 직접 집계 (스케줄 유무 무관)
+  const todayChgsFilt=todayChgs.filter(c=>{
+    const st=getStudent(c.studentId);
+    return st&&(sfil==='all'||st.school===sfil);
+  });
+  const absentSeenTot=new Set();
+  todayChgsFilt.forEach(c=>{
+    if(c.type==='absent'){if(absentSeenTot.has(c.studentId))return;absentSeenTot.add(c.studentId);}
+    totChanges++;
+  });
+  // 기간결석도 포함
+  Object.entries(S.db.dailyChanges||{}).forEach(([d,arr])=>{
+    if(d===date)return;
+    arr.forEach(c=>{
+      if(c.undone)return;
+      if(!(c.type==='period_absent'||c.type==='period_individual'))return;
+      if(!(c.startDate<=date&&c.endDate>=date))return;
+      const st=getStudent(c.studentId);
+      if(!st||(sfil!=='all'&&st.school!==sfil))return;
+      const classDays=getStudentClassDays(st);
+      if(classDays&&!classDays.includes(dk))return;
+      totChanges++;
+    });
+  });
+
   const rows=clsList.map(({cls,school})=>{
     const r=calcCls(cls);
     if(!r||r.total===0)return null;
-    totTotal+=r.total;totAttend+=r.attend;totAbsent+=r.absent;totChanges+=r.changes.length;
+    totTotal+=r.total;totAttend+=r.attend;totAbsent+=r.absent;
     allAbsentNames.push(...(r.absentNames||[]));
     return{cls,school,r};
   }).filter(Boolean);
@@ -2562,17 +2588,24 @@ function showClsAbsentPopup(names){
 
 function showTodayChangesPopup(date, filterChgId){
   const dk=getDK(date);
+  const sfil=S.schoolFilter;
   // 당일 변경 + 다른 날에 등록된 period_absent 중 기간 내인 것
-  const direct=getDayChanges(date).filter(c=>!c.undone);
+  const direct=getDayChanges(date).filter(c=>{
+    if(c.undone)return false;
+    if(filterChgId)return true; // 특정 건 조회 시 필터 없음
+    if(sfil==='all')return true;
+    const st=getStudent(c.studentId);
+    return st&&st.school===sfil;
+  });
   const periodFromOther=[];
   for(const [d,arr] of Object.entries(S.db.dailyChanges||{})){
     if(d===date)continue;
     for(const c of arr){
       if(!c.undone&&(c.type==='period_absent'||c.type==='period_individual')&&c.startDate<=date&&c.endDate>=date){
-        // 수업요일 필터
         const st=getStudent(c.studentId);
         const classDays=getStudentClassDays(st);
         if(classDays&&!classDays.includes(dk))continue;
+        if(!filterChgId&&sfil!=='all'&&(!st||st.school!==sfil))continue;
         periodFromOther.push({...c,_fromDate:d});
       }
     }
@@ -5761,6 +5794,19 @@ function showChangeBanner(){
   _showBannerHtml(detailHtml);
 }
 
+function _playDing(){
+  try{
+    const ctx=new(window.AudioContext||window.webkitAudioContext)();
+    const o=ctx.createOscillator();
+    const g=ctx.createGain();
+    o.connect(g);g.connect(ctx.destination);
+    o.type='sine';o.frequency.setValueAtTime(880,ctx.currentTime);
+    g.gain.setValueAtTime(0.3,ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.6);
+    o.start(ctx.currentTime);o.stop(ctx.currentTime+0.6);
+  }catch(e){}
+}
+
 function _showBannerHtml(detailHtml){
   let b=document.getElementById('change_banner');
   if(!b){
@@ -5777,6 +5823,7 @@ function _showBannerHtml(detailHtml){
   b.innerHTML=`<span style="font-size:16px">📢</span><span style="flex:1">${detailHtml}</span><button onclick="document.getElementById('change_banner').remove()" style="border:none;background:rgba(255,255,255,.2);color:#fff;border-radius:8px;padding:4px 12px;cursor:pointer;font-size:12px;font-weight:700;font-family:inherit;flex-shrink:0">확인</button>`;
   clearTimeout(b._timer);
   b._timer=setTimeout(()=>{if(b.parentNode)b.remove();},8000);
+  _playDing();
 }
 function showToast(msg,type){
   const isErr=msg.startsWith('❌')||msg.startsWith('⛔');
