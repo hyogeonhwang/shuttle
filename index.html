@@ -3211,7 +3211,7 @@ function buildChanges(date){
   function dedup(list){
     const seen=new Set();
     return list.filter(c=>{
-      const key=c.studentId+'_'+c.type+(c.type==='period_absent'||c.type==='period_individual'?'_'+c.startDate:'');
+      const key=c.studentId+'_'+c.type+(c.type==='period_absent'||c.type==='period_individual'?'_'+c.startDate:'')+(c.type==='individual'&&c.dir?'_'+c.dir:'')+'_'+c.routeId;
       if(seen.has(key))return false;
       seen.add(key);
       return true;
