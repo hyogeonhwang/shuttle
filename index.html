@@ -6184,9 +6184,10 @@ function saveChange(){
       const afternoonRid=(dayEx.afternoon?.routeId||defSc.afternoon?.routeId||'');
       const rids=[...new Set([morningRid,afternoonRid].filter(r=>r&&!r.startsWith('__')))];
       if(!confirm(`[${st.name}] 오늘 개별 등하원 처리하시겠습니까?`))return;
+      const inputterBoth=el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'';
       const arr=getDayChanges(S.date);
       let filtered=arr.filter(c=>!(c.studentId===sid&&rids.includes(c.routeId)&&!c.undone));
-      rids.forEach(r=>filtered.push({id:uid(),studentId:sid,routeId:r,type:'individual',dir:'both',notes,timestamp:Date.now(),undone:false}));
+      rids.forEach(r=>filtered.push({id:uid(),studentId:sid,routeId:r,type:'individual',dir:'both',notes,inputter:inputterBoth,timestamp:Date.now(),undone:false}));
       setDayChanges(S.date,filtered);
       S.lastChange={id:'multi',date:S.date,desc:`${st.name} 개별 등하원`};
       closeModal();showToast(`✅ ${st.name} 개별 등하원 등록`);render();return;
@@ -6198,9 +6199,10 @@ function saveChange(){
     const realRid=autoRid&&!autoRid.startsWith('__')?autoRid:'';
     if(!realRid){alert(`${st.name}의 ${ctype==='individual_morning'?'등원':'하원'} 노선이 설정되어 있지 않습니다`);return;}
     if(!confirm(`[${st.name}] 오늘 개별 ${ctype==='individual_morning'?'등원':'하원'} 처리하시겠습니까?`))return;
+    const inputterDir=el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'';
     const arr=getDayChanges(S.date);
     let filtered=arr.filter(c=>!(c.studentId===sid&&c.routeId===realRid&&!c.undone));
-    filtered.push({id:uid(),studentId:sid,routeId:realRid,type:'individual',dir,notes,timestamp:Date.now(),undone:false});
+    filtered.push({id:uid(),studentId:sid,routeId:realRid,type:'individual',dir,notes,inputter:inputterDir,timestamp:Date.now(),undone:false});
     setDayChanges(S.date,filtered);
     S.lastChange={id:filtered[filtered.length-1].id,date:S.date,desc:`${st.name} 개별 ${ctype==='individual_morning'?'등원':'하원'}`};
     closeModal();showToast(`✅ ${st.name} 개별 ${ctype==='individual_morning'?'등원':'하원'} 등록`);render();return;
