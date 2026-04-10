@@ -2163,6 +2163,9 @@ function buildAttendance(date,dk,wd){
       const chgs=todayChgs.filter(c=>c.studentId===st.id);
       const absentChg=chgs.find(c=>c.type==='absent'||c.type==='period_absent');
       const indivChg=chgs.find(c=>c.type==='individual');
+      // 호차변경이 있으면 개별 집계에서 제외
+      const busChgM=chgs.find(c=>c.type==='bus_change'&&getRoute(c.routeId)?.dir==='morning');
+      const busChgA=chgs.find(c=>c.type==='bus_change'&&getRoute(c.routeId)?.dir==='afternoon');
 
       // 결석
       let isAbsent=false;
@@ -2181,9 +2184,9 @@ function buildAttendance(date,dk,wd){
       if(isAbsent){absent++;absentNames.push(st.name);return;}
 
       // 개별등원
-      const isMIndiv=mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir));
+      const isMIndiv=!busChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
       // 개별하원
-      const isAIndiv=aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir));
+      const isAIndiv=!busChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
 
       if(isMIndiv){indivM++;indivMNames.push(st.name);}
       if(isAIndiv){indivA++;indivANames.push(st.name);}
