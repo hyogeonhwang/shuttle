@@ -3214,7 +3214,10 @@ function buildChanges(date){
   function dedup(list){
     const seen=new Set();
     return list.filter(c=>{
-      const key=c.studentId+'_'+c.type+(c.type==='period_absent'||c.type==='period_individual'?'_'+c.startDate:'')+(c.type==='individual'&&c.dir?'_'+c.dir:'')+'_'+c.routeId;
+      // 결석은 노선 무관하게 학생당 1건으로 합침
+      const key=c.type==='absent'
+        ? c.studentId+'_absent'
+        : c.studentId+'_'+c.type+(c.type==='period_absent'||c.type==='period_individual'?'_'+c.startDate:'')+(c.type==='individual'&&c.dir?'_'+c.dir:'')+'_'+c.routeId;
       if(seen.has(key))return false;
       seen.add(key);
       return true;
