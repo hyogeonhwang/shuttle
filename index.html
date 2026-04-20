@@ -1338,6 +1338,40 @@ function getRouteStudents(routeId,date){
     });
   }
 
+  // 2.5패스: 셔틀탑승(type='tin') 등록된 학생 → 평소 탑승(normal)으로 덮어쓰기
+  // 개별/결석 등 어떤 상태였더라도 tin이 있으면 그 노선에 정상 탑승하는 것으로 처리
+  for(const chg of todayChgs){
+    if(chg.undone||chg.type!=='tin'||chg.routeId!==routeId)continue;
+    const st=getStudent(chg.studentId);
+    if(!st||!isActiveOnDate(st,date))continue;
+    // 정류장/시간: 요일 override → default → 구형 schedules 순
+    const daySchT=st.daySchedules?.[dk]?.[dir];
+    const defSchT=st.daySchedules?.default?.[dir];
+    let tinSched={stop:'',pickupTime:'',notes:''};
+    if(daySchT&&!String(daySchT.routeId||'').startsWith('__')&&daySchT.stop){
+      tinSched={stop:daySchT.stop,pickupTime:daySchT.pickupTime||'',notes:daySchT.notes||''};
+    } else if(defSchT&&!String(defSchT.routeId||'').startsWith('__')&&defSchT.stop){
+      tinSched={stop:defSchT.stop,pickupTime:defSchT.pickupTime||'',notes:defSchT.notes||''};
+    } else if(st.schedules?.[routeId]){
+      tinSched={...st.schedules[routeId]};
+    }
+    if(addedIds.has(st.id)){
+      // 이미 1패스에서 포함된 학생(개별/결석/기간결석 등) → 상태를 normal로 덮어쓰기
+      const ex=result.find(r=>r.id===st.id);
+      if(ex){
+        ex.state='normal';
+        ex.chg=null;
+        ex.isPA=false;
+        ex.isFixedOverride=false;
+        if(tinSched.stop)ex.sched={...tinSched};
+      }
+    } else {
+      // 외부에서 신규 추가
+      result.push({...st,sched:{...tinSched},chg:null,state:'normal',isPA:false});
+      addedIds.add(st.id);
+    }
+  }
+
   // 3패스: period_absent(routeId='all') 학생 중 위 1패스에서 누락된 경우 보완
   for(const [_d,arr] of Object.entries(S.db.dailyChanges||{})){
     for(const c of arr){
@@ -2166,6 +2200,9 @@ function buildAttendance(date,dk,wd){
       // 호차변경이 있으면 개별 집계에서 제외
       const busChgM=chgs.find(c=>c.type==='bus_change'&&getRoute(c.routeId)?.dir==='morning');
       const busChgA=chgs.find(c=>c.type==='bus_change'&&getRoute(c.routeId)?.dir==='afternoon');
+      // 셔틀탑승(tin) 있으면 그 방향은 정상 탑승 처리 (개별/결석 덮어쓰기)
+      const tinChgM=chgs.find(c=>c.type==='tin'&&getRoute(c.routeId)?.dir==='morning');
+      const tinChgA=chgs.find(c=>c.type==='tin'&&getRoute(c.routeId)?.dir==='afternoon');
 
       // 결석
       let isAbsent=false;
@@ -2180,13 +2217,15 @@ function buildAttendance(date,dk,wd){
         }
       }
       if(mRid==='__absent__'&&aRid==='__absent__')isAbsent=true;
+      // tin 있으면 결석 해제 (그 방향으로 셔틀 탄다는 의미)
+      if(isAbsent&&(tinChgM||tinChgA))isAbsent=false;
 
       if(isAbsent){absent++;absentNames.push(st.name);return;}
 
-      // 개별등원
-      const isMIndiv=!busChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
-      // 개별하원
-      const isAIndiv=!busChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
+      // 개별등원 (tin 있으면 제외)
+      const isMIndiv=!busChgM&&!tinChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
+      // 개별하원 (tin 있으면 제외)
+      const isAIndiv=!busChgA&&!tinChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
 
       if(isMIndiv){indivM++;indivMNames.push(st.name);}
       if(isAIndiv){indivA++;indivANames.push(st.name);}
@@ -2228,6 +2267,7 @@ function buildAttendance(date,dk,wd){
       }
       else if(c.type==='bus_change')type='호차이동';
       else if(c.type==='stop_change')type='정류장변경';
+      else if(c.type==='tin')type='셔틀탑승';
       else return;
       const key=st.id+'_'+type;
       if(seenChg.has(key))return;
@@ -2637,9 +2677,9 @@ function showTodayChangesPopup(date, filterChgId){
     });
   }
   if(!chgs.length)return;
-  const typeKO={absent:'결석',individual:'개별등하원',individual_both:'개별 등하원',individual_morning:'개별 등원',individual_afternoon:'개별 하원',period_individual:'개별등하원(기간)',bus_change:'호차변경',stop_change:'정류장변경',period_absent:'결석기간'};
-  const typeIcon={absent:'🚫',individual:'🚶',individual_both:'🚶',individual_morning:'🌅',individual_afternoon:'🌇',bus_change:'🔄',stop_change:'📍',period_absent:'📅'};
-  const typeColor={absent:'#dc2626',individual:'#7c3aed',individual_both:'#7c3aed',individual_morning:'#7c3aed',individual_afternoon:'#7c3aed',bus_change:'#d97706',stop_change:'#0891b2',period_absent:'#d97706'};
+  const typeKO={absent:'결석',individual:'개별등하원',individual_both:'개별 등하원',individual_morning:'개별 등원',individual_afternoon:'개별 하원',period_individual:'개별등하원(기간)',bus_change:'호차변경',stop_change:'정류장변경',period_absent:'결석기간',tin:'셔틀탑승'};
+  const typeIcon={absent:'🚫',individual:'🚶',individual_both:'🚶',individual_morning:'🌅',individual_afternoon:'🌇',bus_change:'🔄',stop_change:'📍',period_absent:'📅',tin:'🚌'};
+  const typeColor={absent:'#dc2626',individual:'#7c3aed',individual_both:'#7c3aed',individual_morning:'#7c3aed',individual_afternoon:'#7c3aed',bus_change:'#d97706',stop_change:'#0891b2',period_absent:'#d97706',tin:'#1d4ed8'};
 
   const rows=chgs.map(c=>{
     const st=getStudent(c.studentId);
@@ -2654,14 +2694,37 @@ function showTodayChangesPopup(date, filterChgId){
     // 변경 전 (원래 배정) - period_absent는 학생의 실제 노선 표시
     let beforeHtml='';
     if(route){
-      const sc2=st.daySchedules?.default?.[route.dir==='morning'?'morning':'afternoon']||{};
-      const busCol2=BUS_COLORS[route.busId]||'#555';
-      beforeHtml=`
-        <div style="font-size:11px;color:#6b7280">
-          <span style="background:${busCol2};color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:6px;margin-right:4px">${route.busId}호</span>
-          ${esc(getRouteLabel(route.id))}
-        </div>
-        <div style="font-size:10px;color:#9ca3af;margin-top:2px">📍 ${esc(sc2.stop||'-')}</div>`;
+      if(c.type==='tin'){
+        // tin(셔틀탑승): 그 날짜의 실제 스케줄(요일 override → default)을 표시
+        const dk=getDK(S.date);
+        const dir=route.dir==='morning'?'morning':'afternoon';
+        const sched=st.daySchedules?.[dk]?.[dir]||st.daySchedules?.default?.[dir];
+        if(!sched||!sched.routeId){
+          beforeHtml=`<div style="font-size:11px;color:#9ca3af">탑승 없음</div>`;
+        } else if(sched.routeId==='__individual__'){
+          beforeHtml=`<div style="font-size:11px;font-weight:900;color:#7c3aed">🚶 개별등하원</div>`;
+        } else if(sched.routeId==='__absent__'){
+          beforeHtml=`<div style="font-size:11px;font-weight:900;color:#dc2626">🚫 결석</div>`;
+        } else {
+          const r0=getRoute(sched.routeId);
+          const bc0=r0?BUS_COLORS[r0.busId]||'#555':'#6b7280';
+          beforeHtml=`
+            <div style="font-size:11px;color:#6b7280">
+              <span style="background:${bc0};color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:6px;margin-right:4px">${r0?.busId||'?'}호</span>
+              ${esc(r0?getRouteLabel(r0.id):sched.routeId)}
+            </div>
+            <div style="font-size:10px;color:#9ca3af;margin-top:2px">📍 ${esc(sched.stop||'-')}</div>`;
+        }
+      } else {
+        const sc2=st.daySchedules?.default?.[route.dir==='morning'?'morning':'afternoon']||{};
+        const busCol2=BUS_COLORS[route.busId]||'#555';
+        beforeHtml=`
+          <div style="font-size:11px;color:#6b7280">
+            <span style="background:${busCol2};color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:6px;margin-right:4px">${route.busId}호</span>
+            ${esc(getRouteLabel(route.id))}
+          </div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">📍 ${esc(sc2.stop||'-')}</div>`;
+      }
     } else {
       // routeId='all' - 학생의 등원/하원 노선 모두 표시
       const def=st.daySchedules?.default||{};
@@ -2697,6 +2760,16 @@ function showTodayChangesPopup(date, filterChgId){
       afterHtml=`
         <div style="font-size:11px;font-weight:900;color:#0891b2">📍 정류장 변경</div>
         <div style="font-size:10px;color:#9ca3af;margin-top:2px">${esc(c.toStop||'-')}</div>`;
+    } else if(c.type==='tin'){
+      const toRoute=getRoute(c.routeId);
+      const toBusCol=toRoute?BUS_COLORS[toRoute.busId]||'#555':'#555';
+      const tinStop=st.schedules?.[c.routeId]?.stop||'';
+      afterHtml=`
+        <div style="font-size:11px;font-weight:900;color:#1d4ed8">
+          <span style="background:${toBusCol};color:#fff;font-size:9px;font-weight:800;padding:1px 6px;border-radius:6px;margin-right:4px">${toRoute?.busId||'?'}호</span>
+          ${esc(toRoute?.label||c.routeId||'?')}
+        </div>
+        ${tinStop?`<div style="font-size:10px;color:#9ca3af;margin-top:2px">📍 ${esc(tinStop)}</div>`:''}`;
     } else if(c.type==='period_absent'){
       afterHtml=`
         <div style="font-size:11px;font-weight:900;color:#d97706">📅 결석기간</div>
@@ -4480,6 +4553,7 @@ function buildChangeModal(d){
     ['period_absent','📅','결석기간'],
     ['bus_change','🔄','호차 변경'],
     ['stop_change','📍','정류장 변경'],
+    ['tin','🚌','셔틀 탑승'],
   ];
 
   return `<div class="overlay" onclick="if(event.target===this)closeModal()">
@@ -4499,9 +4573,9 @@ function buildChangeModal(d){
     </select>
   </div>
 
-  <!-- ③ 노선 선택 (호차변경/정류장변경만) -->
-  ${(ctype==='bus_change'||ctype==='stop_change')?`
-  <div class="fg"><label>노선</label>
+  <!-- ③ 노선 선택 (호차변경/정류장변경/셔틀탑승) -->
+  ${(ctype==='bus_change'||ctype==='stop_change'||ctype==='tin')?`
+  <div class="fg"><label>${ctype==='tin'?'탑승할 노선':'노선'}</label>
     <select id="m_rt" onchange="S.modal.data.selRid=this.value;render()">
       <option value="">-- 노선 선택 --</option>
       ${routeOpts.map(r=>`<option value="${r.id}" ${selRid===r.id?'selected':''}>[${r.busId}호] ${getRouteLabel(r.id)} · ${getRouteTime(r.id)}</option>`).join('')}
@@ -6219,7 +6293,22 @@ function saveChange(){
 
   if(!rid && ctype!=='period_absent'){alert('노선을 선택하세요');return;}
   const route=getRoute(rid);
-  const typeKO={individual:'개별등하원',individual_both:'개별 등하원',individual_morning:'개별 등원',individual_afternoon:'개별 하원',period_absent:'결석기간설정',bus_change:'호차변경',stop_change:'정류장변경'};
+  const typeKO={individual:'개별등하원',individual_both:'개별 등하원',individual_morning:'개별 등원',individual_afternoon:'개별 하원',period_absent:'결석기간설정',bus_change:'호차변경',stop_change:'정류장변경',tin:'셔틀탑승'};
+
+  // 셔틀 탑승 처리
+  if(ctype==='tin'){
+    if(!rid){alert('탑승할 노선을 선택하세요');return;}
+    const inputterTin=el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'';
+    const notes=el('m_notes')?.value||'';
+    if(!confirm(`[${st.name}] 오늘 [${route?.busId||'?'}호차] 셔틀 탑승 처리하시겠습니까?`))return;
+    const arr=getDayChanges(S.date);
+    const filtered=arr.filter(c=>!(c.studentId===sid&&c.routeId===rid&&c.type==='tin'&&!c.undone));
+    filtered.push({id:uid(),studentId:sid,routeId:rid,type:'tin',notes,inputter:inputterTin,timestamp:Date.now(),undone:false});
+    setDayChanges(S.date,filtered);
+    S.lastChange={id:filtered[filtered.length-1].id,date:S.date,desc:`${st.name} 셔틀탑승`};
+    closeModal();showToast(`✅ ${st.name} 셔틀탑승 등록`);render();return;
+  }
+
   let msg=`[${st.name}] ${route?.label||rid}\n변경유형: ${typeKO[ctype]||ctype}`;
   if(ctype==='period_absent'){
     const sd=el('m_sd')?.value,ed=el('m_ed')?.value;
