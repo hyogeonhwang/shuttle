@@ -2195,7 +2195,8 @@ function buildAttendance(date,dk,wd){
 
       // 당일 변경 체크
       const chgs=todayChgs.filter(c=>c.studentId===st.id);
-      const absentChg=chgs.find(c=>c.type==='absent'||c.type==='period_absent');
+      const absentChg=chgs.find(c=>c.type==='absent');
+      const periodAbsentChgToday=chgs.find(c=>c.type==='period_absent');
       const indivChg=chgs.find(c=>c.type==='individual');
       // 호차변경이 있으면 개별 집계에서 제외
       const busChgM=chgs.find(c=>c.type==='bus_change'&&getRoute(c.routeId)?.dir==='morning');
@@ -2204,28 +2205,35 @@ function buildAttendance(date,dk,wd){
       const tinChgM=chgs.find(c=>c.type==='tin'&&getRoute(c.routeId)?.dir==='morning');
       const tinChgA=chgs.find(c=>c.type==='tin'&&getRoute(c.routeId)?.dir==='afternoon');
 
-      // 결석
+      // dir별 개별 판정 - 결석보다 우선 (당일 명시적 등록이 더 신뢰)
+      const isMIndiv=!busChgM&&!tinChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
+      const isAIndiv=!busChgA&&!tinChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
+
+      // 결석 판정 (period_absent: 날짜 문자열 trim 후 비교)
       let isAbsent=false;
       if(absentChg){isAbsent=true;}
+      else if(periodAbsentChgToday){isAbsent=true;}
       else{
-        // period_absent 체크
+        // 다른 날짜 키에 저장된 period_absent 중 오늘 포함하는 것 체크
         for(const [,arr] of Object.entries(S.db.dailyChanges||{})){
           for(const c of arr){
-            if(c.studentId===st.id&&(c.type==='period_absent')&&!c.undone&&c.startDate<=date&&c.endDate>=date){isAbsent=true;break;}
+            if(c.studentId!==st.id||c.type!=='period_absent'||c.undone)continue;
+            const sd=String(c.startDate||'').trim();
+            const ed=String(c.endDate||'').trim();
+            if(!sd||!ed)continue;
+            if(sd<=date&&ed>=date){isAbsent=true;break;}
           }
           if(isAbsent)break;
         }
       }
-      if(mRid==='__absent__'&&aRid==='__absent__')isAbsent=true;
+      // 학생 설정상 양방향 모두 __absent__ → 단, 당일 변경 레코드가 하나라도 있으면 그게 우선
+      if(mRid==='__absent__'&&aRid==='__absent__'&&chgs.length===0)isAbsent=true;
       // tin 있으면 결석 해제 (그 방향으로 셔틀 탄다는 의미)
       if(isAbsent&&(tinChgM||tinChgA))isAbsent=false;
+      // 당일 개별 변경이 있으면 결석 해제 (개별로 처리한다는 명시적 의사)
+      if(isAbsent&&(isMIndiv||isAIndiv))isAbsent=false;
 
       if(isAbsent){absent++;absentNames.push(st.name);return;}
-
-      // 개별등원 (tin 있으면 제외)
-      const isMIndiv=!busChgM&&!tinChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
-      // 개별하원 (tin 있으면 제외)
-      const isAIndiv=!busChgA&&!tinChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
 
       if(isMIndiv){indivM++;indivMNames.push(st.name);}
       if(isAIndiv){indivA++;indivANames.push(st.name);}
@@ -2241,7 +2249,15 @@ function buildAttendance(date,dk,wd){
       const st=stus.find(s=>s.id===c.studentId);
       if(!st)return;
       let type='';
-      if(c.type==='absent'||c.type==='period_absent')type='결석';
+      if(c.type==='absent')type='결석';
+      else if(c.type==='period_absent'){
+        // 미래 기간결석을 오늘 등록한 경우는 오늘변동에서 제외
+        const sd=String(c.startDate||'').trim();
+        const ed=String(c.endDate||'').trim();
+        if(!sd||!ed)return;
+        if(!(sd<=date&&ed>=date))return;
+        type='결석';
+      }
       else if(c.type==='individual'){
         // 같은 학생의 개별 변경이 이미 있으면 등+하로 합치기
         const existKey1=seenChg.has(st.id+'_개별등원');
