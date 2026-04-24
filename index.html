@@ -2228,10 +2228,8 @@ function buildAttendance(date,dk,wd){
       }
       // 학생 설정상 양방향 모두 __absent__ → 단, 당일 변경 레코드가 하나라도 있으면 그게 우선
       if(mRid==='__absent__'&&aRid==='__absent__'&&chgs.length===0)isAbsent=true;
-      // tin 있으면 결석 해제 (그 방향으로 셔틀 탄다는 의미)
+      // tin 있으면 결석 해제 (그 방향으로 셔틀 탄다는 명시적 의사)
       if(isAbsent&&(tinChgM||tinChgA))isAbsent=false;
-      // 당일 개별 변경이 있으면 결석 해제 (개별로 처리한다는 명시적 의사)
-      if(isAbsent&&(isMIndiv||isAIndiv))isAbsent=false;
 
       if(isAbsent){absent++;absentNames.push(st.name);return;}
 
