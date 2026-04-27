@@ -2209,12 +2209,11 @@ function buildAttendance(date,dk,wd){
       const isMIndiv=!busChgM&&!tinChgM&&(mRid==='__individual__'||(indivChg&&(indivChg.dir==='morning'||indivChg.dir==='both'||!indivChg.dir)));
       const isAIndiv=!busChgA&&!tinChgA&&(aRid==='__individual__'||(indivChg&&(indivChg.dir==='afternoon'||indivChg.dir==='both'||!indivChg.dir)));
 
-      // 결석 판정 (period_absent: 날짜 문자열 trim 후 비교)
+      // 결석 판정: period_absent는 저장 위치 무관, 항상 날짜 범위로만 판정
       let isAbsent=false;
       if(absentChg){isAbsent=true;}
-      else if(periodAbsentChgToday){isAbsent=true;}
       else{
-        // 다른 날짜 키에 저장된 period_absent 중 오늘 포함하는 것 체크
+        // 모든 dailyChanges 순회하면서 오늘이 startDate~endDate 안에 들어가는 period_absent만 결석 처리
         for(const [,arr] of Object.entries(S.db.dailyChanges||{})){
           for(const c of arr){
             if(c.studentId!==st.id||c.type!=='period_absent'||c.undone)continue;
