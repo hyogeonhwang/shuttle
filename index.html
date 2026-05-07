@@ -1677,8 +1677,10 @@ function buildBusRouteRows(busRoutes,date,sfil){
   <div style="padding:8px 13px 12px;background:#fff">
     ${(S.db.routeMemo?.[r.id])?`<div style="font-size:10px;color:#6b7280;margin-bottom:7px;padding:4px 8px;background:#fffbeb;border-radius:5px;border-left:3px solid #f59e0b">💬 ${esc(S.db.routeMemo[r.id])}</div>`:''}
     ${buildStopGroups(sts,date,rCol)}
-    <div style="margin-top:8px;text-align:right;display:flex;justify-content:flex-end;gap:6px">
+    <div style="margin-top:8px;text-align:right;display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap">
       <button class="btn btn-sec btn-xs" onclick="event.stopPropagation();openChangeModal(null,'${r.id}')">✚ 변경등록</button>
+      <button onclick="event.stopPropagation();sendDelaySMS('${r.id}','${date}')"
+        style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">⏰ 지연 안내</button>
       ${r.dir==='morning'?`<button onclick="event.stopPropagation();sendArrivalSMS('${r.id}','${date}')"
         style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>`:''}
     </div>
@@ -1912,10 +1914,12 @@ function buildTeacherView(date,dk,wd){
       }).join('')}
     </div>`).join('')}
   </div>
-  ${r.dir==='morning'?`<div style="padding:8px 15px 12px;text-align:right">
-    <button onclick="sendArrivalSMS('${r.id}','${date}')"
-      style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>
-  </div>`:''}
+  <div style="padding:8px 15px 12px;text-align:right;display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap">
+    <button onclick="sendDelaySMS('${r.id}','${date}')"
+      style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">⏰ 지연 안내</button>
+    ${r.dir==='morning'?`<button onclick="sendArrivalSMS('${r.id}','${date}')"
+      style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>`:''}
+  </div>
 `:''}
 </div>`;
   }).join('');
@@ -3064,6 +3068,8 @@ function buildRoutes(date,dk){
           ${!activeToday?`<div class="note note-warn">오늘(${DAY_KO[dk]}요일)은 이 노선 운행일이 아닙니다</div>`:''}
           ${am?`<div style="margin-bottom:10px;display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-pr btn-sm" onclick="openChangeModal(null,'${r.id}')">✚ 변경등록</button>
+            <button onclick="sendDelaySMS('${r.id}','${date}')"
+              style="background:#f59e0b;color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">⏰ 지연 안내</button>
             ${r.dir==='morning'?`<button onclick="sendArrivalSMS('${r.id}','${date}')"
               style="background:#16a34a;color:#fff;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;font-size:11px;font-weight:700;font-family:inherit;white-space:nowrap">🔔 등원 알림</button>`:''}
           </div>`:''}
@@ -6471,6 +6477,189 @@ function undoChange(date,cid){
   setDayChanges(date,updated);
   if(chg) showChangeBannerWithDetail(chg, true);
   render();
+}
+
+// 차량 지연 일괄 SMS 발송
+async function sendDelaySMS(routeId, date){
+  if(!SMS_CONFIG.functionUrl||SMS_CONFIG.functionUrl.includes('YOUR_CLOUD')){
+    showToast('❌ Cloud Function URL을 설정하세요 (SMS_CONFIG)');return;
+  }
+  const route=getRoute(routeId);
+  if(!route)return;
+  const routeLabel=getRouteLabel(routeId);
+  const today=date||S.date;
+  const allStudents=getRouteStudents(routeId,today);
+  const activeStudents=allStudents.filter(s=>s.state==='normal'||s.state==='tin'||s.state==='stopchg');
+  if(activeStudents.length===0){showToast('⚠️ 오늘 탑승 학생이 없습니다');return;}
+
+  const targets=activeStudents.map(s=>({
+    id:s.id, name:s.name, phone:s.phone||'',
+    hasPhone:s.phone&&s.phone.trim().length>9,
+    school:s.school||'altiora'
+  })).filter(t=>t.hasPhone);
+
+  if(targets.length===0){showToast('⚠️ 연락처가 등록된 학생이 없습니다');return;}
+
+  // 학교별 prefix (route의 school 기준)
+  const schoolPrefix={altiora:'알티오라',petamus:'페타무스',pangram:'팬그램'}[route.school]||'알티오라';
+  const busLabel=`${route.busId}호차 ${routeLabel}`;
+
+  // 메시지 자동 생성 함수
+  function buildMsg(min){
+    return `[${schoolPrefix}]\n${busLabel}이 약 ${min}분 지연되고 있습니다. 양해 부탁드립니다.`;
+  }
+
+  let selectedMin=10;
+  const cost=Math.round(targets.length*33);
+
+  // 모달 생성
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`
+  <div style="background:#fff;border-radius:14px;padding:20px;max-width:380px;width:100%;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+      <span style="font-size:14px;font-weight:900;color:#1A2A4A">⏰ 차량 지연 안내</span>
+      <button id="ds_close" style="border:none;background:none;font-size:22px;cursor:pointer;color:#9ca3af;line-height:1">×</button>
+    </div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:14px;padding:8px 10px;background:#f9fafb;border-radius:6px;display:flex;align-items:center;gap:6px">
+      <span style="background:${BUS_COLORS[route.busId]||'#555'};color:#fff;font-size:10px;font-weight:800;padding:2px 7px;border-radius:5px">${route.busId}호차</span>
+      <span style="font-weight:700;color:#1A2A4A">${routeLabel}</span>
+    </div>
+
+    <div style="margin-bottom:12px">
+      <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:6px;font-weight:700">지연 시간</label>
+      <div id="ds_min_buttons" style="display:flex;gap:5px;flex-wrap:wrap">
+        ${[5,10,15,20].map(m=>`<button class="ds-min-btn" data-min="${m}"
+          style="padding:6px 14px;font-size:12px;border:1px solid ${m===10?'#1d4ed8':'#e5e7eb'};background:${m===10?'#dbeafe':'#fff'};color:${m===10?'#1d4ed8':'#374151'};border-radius:6px;cursor:pointer;font-weight:${m===10?'800':'600'};font-family:inherit">${m}분</button>`).join('')}
+        <input type="number" id="ds_min_custom" placeholder="직접" min="1" max="180"
+          style="width:62px;padding:6px 8px;font-size:12px;border:1px solid #e5e7eb;border-radius:6px;font-family:inherit;text-align:center">
+      </div>
+    </div>
+
+    <div style="margin-bottom:12px">
+      <label style="font-size:11px;color:#6b7280;display:block;margin-bottom:6px;font-weight:700">메시지 미리보기</label>
+      <div id="ds_preview" style="padding:10px 12px;background:#f9fafb;border-radius:6px;font-size:12px;line-height:1.55;color:#1f2937;white-space:pre-wrap;border-left:3px solid #f59e0b">${esc(buildMsg(10))}</div>
+    </div>
+
+    <div style="background:#eff6ff;border-radius:8px;padding:10px 12px;margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;margin-bottom:3px">
+        <span style="color:#1d4ed8;font-weight:700">📨 발송 대상</span>
+        <span style="color:#1d4ed8;font-weight:800">${targets.length}명</span>
+      </div>
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#6b7280">
+        <span>예상 비용 (LMS 33원/건)</span>
+        <span style="font-weight:700">약 ${cost.toLocaleString()}원</span>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px">
+      <button id="ds_cancel" style="flex:1;padding:10px;font-size:13px;border:1px solid #e5e7eb;background:#fff;border-radius:8px;cursor:pointer;font-weight:700;color:#6b7280;font-family:inherit">취소</button>
+      <button id="ds_next" style="flex:2;padding:10px;font-size:13px;background:#f59e0b;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-family:inherit">다음 →</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(modal);
+  modal.onclick=e=>{if(e.target===modal)modal.remove();};
+  document.getElementById('ds_close').onclick=()=>modal.remove();
+  document.getElementById('ds_cancel').onclick=()=>modal.remove();
+
+  // 분 버튼 토글
+  function refreshButtons(){
+    modal.querySelectorAll('.ds-min-btn').forEach(b=>{
+      const m=parseInt(b.dataset.min);
+      const active=(m===selectedMin);
+      b.style.border=active?'1px solid #1d4ed8':'1px solid #e5e7eb';
+      b.style.background=active?'#dbeafe':'#fff';
+      b.style.color=active?'#1d4ed8':'#374151';
+      b.style.fontWeight=active?'800':'600';
+    });
+    document.getElementById('ds_preview').textContent=buildMsg(selectedMin);
+  }
+  modal.querySelectorAll('.ds-min-btn').forEach(b=>{
+    b.onclick=()=>{
+      selectedMin=parseInt(b.dataset.min);
+      document.getElementById('ds_min_custom').value='';
+      refreshButtons();
+    };
+  });
+  document.getElementById('ds_min_custom').oninput=function(){
+    const v=parseInt(this.value);
+    if(v>0&&v<=180){selectedMin=v;refreshButtons();}
+  };
+
+  // 다음 → 확인 다이얼로그
+  document.getElementById('ds_next').onclick=()=>{
+    const finalMsg=buildMsg(selectedMin);
+    showDelayConfirm(modal, targets, routeLabel, finalMsg, selectedMin, route);
+  };
+}
+
+// 발송 직전 확인 다이얼로그
+function showDelayConfirm(prevModal, targets, routeLabel, message, min, route){
+  const confirm=document.createElement('div');
+  confirm.style.cssText='position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:16px';
+  confirm.innerHTML=`
+  <div style="background:#fff;border-radius:14px;padding:22px;max-width:340px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.25)">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+      <span style="font-size:20px">⚠️</span>
+      <span style="font-size:14px;font-weight:900;color:#1A2A4A">발송 최종 확인</span>
+    </div>
+    <div style="font-size:13px;color:#374151;margin-bottom:12px;line-height:1.5">
+      <strong style="color:#dc2626;font-size:15px">${targets.length}명</strong>의 학부모님께<br>다음 메시지를 발송합니다.
+    </div>
+    <div style="padding:10px 12px;background:#fffbeb;border-radius:6px;font-size:12px;line-height:1.5;color:#1f2937;white-space:pre-wrap;border-left:3px solid #f59e0b;margin-bottom:14px;max-height:120px;overflow-y:auto">${esc(message)}</div>
+    <div style="font-size:11px;color:#9ca3af;margin-bottom:16px;text-align:center">발송 후에는 취소할 수 없습니다</div>
+    <div style="display:flex;gap:8px">
+      <button id="dc_cancel" style="flex:1;padding:10px;font-size:13px;border:1px solid #e5e7eb;background:#fff;border-radius:8px;cursor:pointer;font-weight:700;color:#6b7280;font-family:inherit">취소</button>
+      <button id="dc_send" style="flex:1;padding:10px;font-size:13px;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:800;font-family:inherit">📤 발송</button>
+    </div>
+  </div>`;
+  document.body.appendChild(confirm);
+  confirm.onclick=e=>{if(e.target===confirm)confirm.remove();};
+  document.getElementById('dc_cancel').onclick=()=>confirm.remove();
+
+  document.getElementById('dc_send').onclick=async()=>{
+    confirm.remove();
+    if(prevModal&&prevModal.parentNode)prevModal.remove();
+    showToast('📤 발송 중...');
+    try{
+      const response=await fetch(SMS_CONFIG.functionUrl,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          type:'delay',
+          students:targets.map(t=>({name:t.name,phone:t.phone,school:t.school})),
+          routeLabel,
+          message,
+          delayMin:min
+        }),
+      });
+      const result=await response.json();
+      if(result.success){
+        showToast(`✅ 지연 안내 발송 완료 ${result.sent}명`+(result.failed>0?` / 실패 ${result.failed}명`:''));
+        if(result.failed>0)alert(`⚠️ 발송 실패 ${result.failed}명:\n${(result.errors||[]).map(e=>`${e.name}(${e.reason})`).join(', ')}`);
+        // 발송 이력 저장
+        try{
+          const histRef=firebase.database().ref(`${DB_KEY}/smsHistory`).push();
+          histRef.set({
+            type:'delay',
+            routeId:route.id,
+            routeLabel,
+            delayMin:min,
+            message,
+            sent:result.sent||0,
+            failed:result.failed||0,
+            recipients:targets.length,
+            timestamp:Date.now(),
+            sentBy:S.user?.name||'unknown'
+          });
+        }catch(e){console.warn('SMS history save failed:',e);}
+      } else {
+        showToast('❌ 발송 실패: '+(result.error||'알 수 없는 오류'));
+      }
+    } catch(err){
+      showToast('❌ 네트워크 오류: '+err.message);
+    }
+  };
 }
 // 변경내역 완전 삭제
 function deleteChangeEntry(date,cid){
