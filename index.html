@@ -2076,7 +2076,7 @@ function buildTodayCls(date,dk){
         if(c.studentId===st.id&&c.type==='period_absent'&&!c.undone&&(c.routeId===rid||c.routeId==='all')&&c.startDate<=date&&c.endDate>=date){state='period_absent';break;}
       }
     }
-    return{state,rid,stop:sc?.stop||'',time:sc?.pickupTime||'',route};
+    return{state,rid,stop:sc?.stop||'',time:sc?.pickupTime||'',route,chg};
   }
 
   // 등원/하원 카운트
@@ -2126,7 +2126,19 @@ function buildTodayCls(date,dk){
       const nameStyle=isAbsent?'text-decoration:line-through double #dc2626;color:#9ca3af':isIndiv?'text-decoration:line-through;color:#9ca3af':'color:#111';
       const badge=isAbsent?`<span style="font-size:9px;font-weight:800;background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:7px;flex-shrink:0">결석</span>`:
         `<span style="font-size:9px;font-weight:800;background:#f3e8ff;color:#6d28d9;padding:2px 8px;border-radius:7px;flex-shrink:0">${s.state==='tout'?'호차이동':'개별'}</span>`;
-      const detail=isAbsent?`${dir==='morning'?'등원':'하원'} 결석`:(s.state==='tout'?'호차 이동':'개별'+(dir==='morning'?'등원':'하원'));
+      let detail;
+      if(isAbsent){
+        detail=`${dir==='morning'?'등원':'하원'} 결석`;
+      } else if(s.state==='tout'){
+        const chg=s.chg;
+        const origRoute=getRoute(chg?.routeId);
+        const newRoute=getRoute(chg?.toRouteId);
+        const origBus=origRoute?.busId?getBusName(origRoute.busId):'';
+        const newBus=newRoute?.busId?getBusName(newRoute.busId):'';
+        detail=origBus&&newBus?`${origBus} → ${newBus}`:'호차 이동';
+      } else {
+        detail='개별'+(dir==='morning'?'등원':'하원');
+      }
       const chgMemo=s.chg?.notes||'';
       const memoShort=chgMemo.length>15?chgMemo.slice(0,15)+'…':chgMemo;
       return `<div onclick="openStudentDetail('${st.id}','${date}')" style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;background:#fff;border:1.5px solid ${isAbsent?'#fecaca':'#e9d5ff'};margin-bottom:6px;cursor:pointer" onmouseenter="this.style.opacity='.8'" onmouseleave="this.style.opacity='1'">
