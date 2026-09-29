@@ -6164,53 +6164,75 @@ function runIntegrityCheck(){
     const currentActive = (S.db.students||[]).filter(s=>s&&s.active).length;
     const yesterdayChgs = ((S.db.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
 
-    // 어제 Firebase 백업 확인
-    firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
-      const backup = snap.val();
-      const issues = [];
-      let backupOk = false;
-      let yesterdayActive = null;
+    // 오늘 이미 관리자가 확인 처리했는지 먼저 확인
+    firebase.database().ref(DB_KEY+'/integrityLog/'+tStr+'/ackedAt').once('value').then(ackSnap=>{
+      const alreadyAcked = !!ackSnap.val();
 
-      if(backup && backup.data){
-        backupOk = true;
-        yesterdayActive = backup.activeStudentCount;
-        // 학생 수 급감 체크 (10% 이상 감소 시 경고)
-        if(yesterdayActive && currentActive < yesterdayActive * 0.9){
-          issues.push('학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명');
-        }
-        // dailyChanges 손실 체크
-        const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
-        if(backupYChgs > yesterdayChgs + 3){
-          issues.push('어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)');
-        }
-      } else {
-        issues.push('어제('+yStr+') 자동 백업 없음');
-      }
+      // 어제 Firebase 백업 확인
+      firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
+        const backup = snap.val();
+        const issues = []; // 각 항목: {type, msg}
+        let backupOk = false;
+        let yesterdayActive = null;
 
-      showIntegrityBanner({
-        ok: issues.length===0,
-        issues,
-        currentActive,
-        yesterdayActive,
-        yesterdayChgs,
-        backupOk
+        if(backup && backup.data){
+          backupOk = true;
+          yesterdayActive = backup.activeStudentCount;
+          // 학생 수 급감 체크 (10% 이상 감소 시 경고)
+          if(yesterdayActive && currentActive < yesterdayActive * 0.9){
+            issues.push({type:'student_drop', msg:'학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명'});
+          }
+          // dailyChanges 손실 체크
+          const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
+          if(backupYChgs > yesterdayChgs + 3){
+            issues.push({type:'change_loss', msg:'어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)'});
+          }
+        } else {
+          issues.push({type:'no_backup', msg:'어제('+yStr+') 자동 백업 없음'});
+        }
+
+        // 정상이면 초록 배너, 이상 있는데 이미 처리됐으면 배너 안 띄움
+        if(issues.length===0){
+          showIntegrityBanner({
+            ok: true, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk
+          });
+        } else if(!alreadyAcked){
+          showIntegrityBanner({
+            ok: false, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk, today:tStr
+          });
+        }
+
+        // 실시간 리스닝: 다른 사용자가 처리하면 내 배너도 사라짐
+        if(issues.length>0){
+          const ackRef = firebase.database().ref(DB_KEY+'/integrityLog/'+tStr+'/ackedAt');
+          ackRef.on('value', snap=>{
+            if(snap.val()){
+              const bar = document.getElementById('integrity_banner');
+              if(bar) bar.remove();
+            }
+          });
+        }
+
+        // 검증 결과 로그 저장 (첫 감지 시에만 기본 정보 세팅)
+        try{
+          firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).update({
+            checkedAt: Date.now(),
+            currentActive, yesterdayActive, yesterdayChgs, backupOk,
+            issues: issues.length>0 ? issues.map(i=>i.msg) : null
+          }).catch(e=>console.warn('검증 로그 저장 실패:',e));
+        }catch(e){}
+      }).catch(e=>{
+        console.error('무결성 체크 실패:', e);
+        if(!alreadyAcked){
+          showIntegrityBanner({
+            ok: false,
+            issues: [{type:'firebase_error', msg:'Firebase 접근 실패: '+e.message}],
+            currentActive, yesterdayActive: null, yesterdayChgs, backupOk: false, today:tStr
+          });
+        }
       });
-
-      // 검증 결과 로그 저장
-      try{
-        firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).set({
-          checkedAt: Date.now(),
-          currentActive, yesterdayActive, yesterdayChgs, backupOk,
-          issues: issues.length>0 ? issues : null
-        }).catch(e=>console.warn('검증 로그 저장 실패:',e));
-      }catch(e){}
     }).catch(e=>{
-      console.error('무결성 체크 실패:', e);
-      showIntegrityBanner({
-        ok: false,
-        issues: ['Firebase 접근 실패'],
-        currentActive, yesterdayActive: null, yesterdayChgs, backupOk: false
-      });
+      console.error('확인 상태 조회 실패:', e);
     });
   }catch(e){
     console.error('무결성 체크 실패:', e);
@@ -6226,13 +6248,48 @@ function showIntegrityBanner(r){
   if(r.ok){
     bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;background:#065f46;color:#fff;padding:9px 16px;font-size:12px;font-weight:700;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
     bar.innerHTML = '✅ 오늘 검증 완료 · 재원생 '+r.currentActive+'명 · 어제 백업 정상 · 어제 변경 '+r.yesterdayChgs+'건 <button onclick="this.parentElement.remove()" style="margin-left:10px;background:#fff;color:#065f46;border:none;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">닫기</button>';
-    // 8초 후 자동 사라짐
     setTimeout(()=>{if(bar.parentElement) bar.remove();}, 8000);
   } else {
+    // 이슈 유형별 안내 문구
+    const guides = {
+      no_backup: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">▪ 오늘 첫 배포이거나 어제가 휴원일이면 정상<br>▪ 어제 앱 사용했는데 이 알림이 뜨면 <b>원장님 문의 필요</b></div>',
+      student_drop: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">⚠️ 심각 - <b>즉시 원장님께 톡방 공유하세요</b><br>⚠️ 데이터 손실 가능성 있음</div>',
+      change_loss: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">⚠️ 심각 - <b>즉시 원장님께 톡방 공유하세요</b><br>⚠️ 어제 등록한 변경사항이 사라진 것 같습니다</div>',
+      firebase_error: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">▪ 잠시 후 새로고침 시도<br>▪ 반복되면 원장님 문의 필요</div>'
+    };
+    // 이슈들의 안내 문구 취합 (중복 제거)
+    const uniqueTypes = [...new Set(r.issues.map(i=>i.type))];
+    const guideHtml = uniqueTypes.map(t=>guides[t]||'').join('');
+    const issuesHtml = r.issues.map(i=>'• '+esc(i.msg)).join('<br>');
     bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;padding:14px 16px;font-size:13px;font-weight:800;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.35)';
-    bar.innerHTML = '🚨 데이터 이상 감지 🚨<div style="font-size:12px;font-weight:600;margin-top:6px;line-height:1.5">'+r.issues.map(i=>'• '+esc(i)).join('<br>')+'</div><button onclick="this.parentElement.remove()" style="margin-top:10px;background:#fff;color:#dc2626;border:none;padding:5px 14px;border-radius:4px;font-size:11px;font-weight:800;cursor:pointer">확인함</button>';
+    bar.innerHTML = '🚨 데이터 이상 감지 🚨<div style="font-size:12px;font-weight:600;margin-top:6px;line-height:1.5">'+issuesHtml+'</div>'+guideHtml+'<button onclick="handleIntegrityAck(\''+esc(r.today||'')+'\')" style="margin-top:12px;background:#fff;color:#dc2626;border:none;padding:6px 16px;border-radius:4px;font-size:12px;font-weight:800;cursor:pointer">🔒 관리자 처리하기</button>';
   }
   document.body.appendChild(bar);
+}
+
+// 관리자 처리 - 비밀번호 확인 후 Firebase에 처리 기록
+function handleIntegrityAck(dateStr){
+  if(!dateStr){showToast('❌ 날짜 정보가 없습니다');return;}
+  const pw = prompt('관리자 비밀번호를 입력하세요:\n(원장님만 처리 가능합니다)');
+  if(pw===null) return;
+  if(pw!==S.db.settings?.adminPw){
+    showToast('❌ 비밀번호가 틀렸습니다');
+    return;
+  }
+  try{
+    firebase.database().ref(DB_KEY+'/integrityLog/'+dateStr).update({
+      ackedAt: Date.now(),
+      ackedBy: (navigator.userAgent||'').substring(0,50)
+    }).then(()=>{
+      const bar = document.getElementById('integrity_banner');
+      if(bar) bar.remove();
+      showToast('✅ 관리자 처리 완료 - 모든 사용자 화면에서 배너가 사라집니다');
+    }).catch(e=>{
+      showToast('❌ 처리 실패: '+e.message);
+    });
+  }catch(e){
+    showToast('❌ 처리 실패: '+e.message);
+  }
 }
 
 function backupData(){
