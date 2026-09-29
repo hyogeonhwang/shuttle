@@ -1,12 +1,13 @@
-<!-- redeploy 2026-07-03 -->
+<!-- v13 redeploy 2026-09-29 - version check + optimistic locking -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>셔틀버스 관리시스템 v3</title>
+<meta name="app-version" content="13">
+<title>셔틀버스 관리시스템 v13</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <!-- Firebase SDK -->
@@ -69,12 +70,106 @@ function doAnonymousLogin(){
   _fbAuth.signInAnonymously()
     .then(()=>{
       document.getElementById('pw_screen')?.remove();
+      checkAppVersion();  // v13: 버전 체크 (실패해도 앱은 계속)
       initDB();
     })
     .catch(e=>{
       console.error('익명 로그인 실패:', e);
       document.getElementById('pw_error').textContent = '❌ 서버 연결 실패. 새로고침 후 다시 시도해주세요.';
     });
+}
+
+// v13: 앱 버전 체크 - Firebase의 최소 요구 버전과 비교
+// - APP_VERSION < minVersion → 쓰기 차단 + 큰 경고 배너 + 자동 새로고침
+// - minVersion 미설정 → 현재 APP_VERSION으로 초기화
+// - 실시간 리스너로 minVersion 변경 감지 (다른 사용자가 배포하면 자동 반영)
+function checkAppVersion(){
+  // 화면 우측 하단에 작은 버전 뱃지 (오래된 버전인지 확인 용이)
+  try {
+    if(!document.getElementById('app_version_badge')){
+      const badge = document.createElement('div');
+      badge.id = 'app_version_badge';
+      badge.style.cssText = 'position:fixed;bottom:6px;right:8px;z-index:9998;background:rgba(0,0,0,0.4);color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-family:inherit;pointer-events:none;letter-spacing:0.3px';
+      badge.textContent = 'v'+APP_VERSION;
+      document.body.appendChild(badge);
+    }
+  }catch(e){}
+  
+  try {
+    const cfgRef = firebase.database().ref(DB_KEY+'/appConfig/minVersion');
+    
+    // 초기 체크
+    cfgRef.once('value').then(snap=>{
+      const minVer = snap.val() || 0;
+      
+      if(minVer === 0){
+        // 최초 설정: 현재 APP_VERSION으로 초기화
+        cfgRef.set(APP_VERSION).catch(e=>console.warn('minVersion 초기화 실패:',e));
+        window.__blockWrites = false;
+        return;
+      }
+      
+      if(APP_VERSION < minVer){
+        window.__blockWrites = true;
+        showOutdatedVersionBanner(APP_VERSION, minVer);
+        // 5초 후 자동 새로고침 시도 (캐시 무시)
+        setTimeout(()=>{ location.reload(true); }, 5000);
+      } else {
+        window.__blockWrites = false;
+        // 이 앱이 minVer보다 높으면 minVer를 올림 (새 버전 배포자가 자동 galvanize)
+        if(APP_VERSION > minVer){
+          cfgRef.set(APP_VERSION).catch(e=>console.warn('minVersion 갱신 실패:',e));
+        }
+      }
+    }).catch(e=>console.warn('버전 체크 실패:',e));
+    
+    // 실시간 리스너: 다른 사용자/관리자가 minVersion을 올리면 즉시 반영
+    if(window.__versionListener){
+      try{ window.__versionListener.off(); }catch(e){}
+    }
+    cfgRef.on('value', snap=>{
+      const minVer = snap.val() || 0;
+      if(minVer > 0 && APP_VERSION < minVer && !window.__blockWrites){
+        window.__blockWrites = true;
+        showOutdatedVersionBanner(APP_VERSION, minVer);
+        setTimeout(()=>{ location.reload(true); }, 5000);
+      }
+    });
+    window.__versionListener = cfgRef;
+  } catch(e){
+    console.warn('버전 체크 초기화 실패:',e);
+  }
+}
+
+// v13: 오래된 버전 경고 배너 (전체 화면 오버레이)
+function showOutdatedVersionBanner(current, required){
+  const existing = document.getElementById('outdated_banner');
+  if(existing) return;
+  
+  const banner = document.createElement('div');
+  banner.id = 'outdated_banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;z-index:999999;background:rgba(0,0,0,0.88);color:#fff;display:flex;align-items:center;justify-content:center;font-family:inherit;padding:20px;box-sizing:border-box';
+  banner.innerHTML = 
+    '<div style="background:#dc2626;padding:28px 24px;border-radius:16px;max-width:440px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,0.6)">'+
+      '<div style="font-size:48px;margin-bottom:8px">⚠️</div>'+
+      '<h2 style="margin:0 0 12px;font-size:20px;font-weight:800">앱 업데이트 필요</h2>'+
+      '<p style="margin:0 0 14px;font-size:14px;line-height:1.55">'+
+        '사용 중인 앱이 오래됐습니다.<br>'+
+        '<strong style="color:#fde68a">데이터 저장이 차단되었습니다.</strong>'+
+      '</p>'+
+      '<div style="background:rgba(255,255,255,0.15);padding:10px;border-radius:8px;font-size:13px;margin-bottom:16px;line-height:1.6">'+
+        '현재 버전: <strong>v'+current+'</strong><br>'+
+        '필요 버전: <strong>v'+required+'</strong> 이상'+
+      '</div>'+
+      '<p style="margin:0 0 18px;font-size:12px;line-height:1.5;opacity:0.95">'+
+        '5초 후 자동으로 새로고침합니다.<br>'+
+        '실패 시 앱을 완전히 닫고 다시 접속해주세요.'+
+      '</p>'+
+      '<button onclick="location.reload(true)" style="background:#fff;color:#dc2626;border:0;padding:12px 28px;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;width:100%">'+
+        '지금 새로고침'+
+      '</button>'+
+    '</div>';
+  document.body.appendChild(banner);
 }
 
 // 비밀번호 화면 표시
@@ -402,6 +497,9 @@ const ALL_DAYS=DAYS;
 const SCHOOL_KO={altiora:'알티오라',petamus:'페타무스',pangram:'팬그램'};
 const BUS_COLORS={'2':'#9c27b0','3':'#673ab7','5':'#1565c0','7':'#2e7d32','8':'#bf360c'};
 const DB_KEY='shuttle_v4';
+// v13: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
+const APP_VERSION = 13;
+window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
 };
@@ -828,7 +926,10 @@ function initDB(){
         if(saved){try{S.db=JSON.parse(saved);}catch(e){S.db=JSON.parse(JSON.stringify(PRESET_DB));}}
         else S.db=JSON.parse(JSON.stringify(PRESET_DB));
         migrateDB();
-        _fbRef.set(S.db).catch(e=>console.warn('Firebase 초기 업로드 실패:', e));
+        // v13: 오래된 버전은 초기 업로드도 차단 (혹시라도 옛날 preset으로 덮어쓰지 못하게)
+        if(!window.__blockWrites){
+          _fbRef.set(S.db).catch(e=>console.warn('Firebase 초기 업로드 실패:', e));
+        }
       }
       render();
 
@@ -1152,6 +1253,11 @@ function migrateStopsFromStudents(){
   save();
 }
 function save(){
+  // v13: 오래된 버전은 Firebase 쓰기 차단 (데이터 덮어쓰기 방지)
+  if(window.__blockWrites){
+    console.warn('[v13 BLOCKED] 오래된 버전에서 save() 시도 - Firebase 쓰기 차단됨');
+    return;
+  }
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
@@ -1192,27 +1298,69 @@ function getTeachersForRoute(rid){
 // BUSINESS LOGIC
 // ══════════════════════════════════════════════════════
 function getDayChanges(date){return S.db.dailyChanges[date]||[]}
+// v13: 낙관적 잠금(Optimistic Locking) 적용
+// - 저장 전 Firebase에서 최신 dailyChanges를 다시 가져옴
+// - 다른 사용자가 추가한 항목(local에 없는 ID)을 병합
+// - 병합된 결과를 저장 → 다른 사용자 데이터 덮어쓰기 방지
+// - 오래된 버전은 아예 저장 차단
 function setDayChanges(date,arr){
+  // v13: 오래된 버전은 Firebase 쓰기 차단
+  if(window.__blockWrites){
+    console.warn('[v13 BLOCKED] 오래된 버전에서 setDayChanges 시도 - 쓰기 차단됨');
+    alert('⚠️ 앱이 오래됐습니다.\n\n새로고침 후 다시 시도해주세요.\n(잠시 후 자동 새로고침됩니다)');
+    return;
+  }
+  
+  // 로컬 즉시 업데이트 (UI 반응성 유지)
   S.db.dailyChanges[date]=arr;
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
-  // dailyChanges만 별도로 저장 → 다른 데이터 저장 시 리스너 트리거 방지
+  
   if(USE_FIREBASE && _fbDb){
     _fbIgnoreUntil = Date.now() + 15000;
-    _fbDb.ref('shuttle_v4/dailyChanges/'+date).set(arr)
-      .then(()=>{ _fbIgnoreUntil = Date.now() + 3000; })
-      .catch(e=>{
-        console.warn('dailyChanges 저장 실패:', e);
-        _fbSaveFailed = true;
-        let warn = document.getElementById('fb_save_warn');
-        if(!warn){
-          warn = document.createElement('div');
-          warn.id = 'fb_save_warn';
-          warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
-          warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
-          document.body.appendChild(warn);
+    
+    // v13: 낙관적 잠금 - 저장 전 remote 최신 상태 fetch → merge → save
+    _fbDb.ref('shuttle_v4/dailyChanges/'+date).once('value').then(remoteSnap=>{
+      const remoteArr = remoteSnap.val() || [];
+      
+      // Merge: local 우선, remote에만 있는 항목 append
+      // (같은 id는 local이 이김 = 사용자 방금 조작한 undone 등이 우선)
+      const localIds = new Set(arr.map(c=>c && c.id).filter(Boolean));
+      const merged = [...arr];
+      let addedFromRemote = 0;
+      for(const remoteItem of remoteArr){
+        if(remoteItem && remoteItem.id && !localIds.has(remoteItem.id)){
+          merged.push(remoteItem);
+          addedFromRemote++;
         }
-        warn.style.display = 'block';
-      });
+      }
+      
+      if(addedFromRemote > 0){
+        console.log('[v13 낙관적 잠금] '+date+': remote에서 '+addedFromRemote+'건 병합됨');
+        // 병합된 결과를 로컬에도 반영
+        S.db.dailyChanges[date] = merged;
+        localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+      }
+      
+      // 병합된 최종 결과 저장
+      return _fbDb.ref('shuttle_v4/dailyChanges/'+date).set(merged);
+    }).then(()=>{
+      _fbIgnoreUntil = Date.now() + 3000;
+      _fbSaveFailed = false;
+      const warn = document.getElementById('fb_save_warn');
+      if(warn) warn.style.display = 'none';
+    }).catch(e=>{
+      console.warn('dailyChanges 저장 실패:', e);
+      _fbSaveFailed = true;
+      let warn = document.getElementById('fb_save_warn');
+      if(!warn){
+        warn = document.createElement('div');
+        warn.id = 'fb_save_warn';
+        warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
+        warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
+        document.body.appendChild(warn);
+      }
+      warn.style.display = 'block';
+    });
   }
 }
 
@@ -7260,6 +7408,12 @@ function saveStudentRoutes(sid){
 }
 
 function saveAndWait(){
+  // v13: 오래된 버전은 Firebase 쓰기 차단
+  if(window.__blockWrites){
+    console.warn('[v13 BLOCKED] 오래된 버전에서 saveAndWait 시도 - 차단됨');
+    showToast('⚠️ 앱이 오래됐습니다. 새로고침 후 다시 시도하세요.');
+    return Promise.reject(new Error('앱 버전이 오래됨 (v13 blocking)'));
+  }
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
