@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>셔틀버스 관리시스템 v3</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
@@ -6152,7 +6155,11 @@ function showSnapshotErrorBanner(errMsg){
   document.body.appendChild(bar);
 }
 
-// 매일 아침 무결성 체크 - 데이터 이상 자동 감지
+// 매일 아침 무결성 체크 - 실시간 리스너 기반 (v12 재설계)
+// 핵심 원리: Firebase의 integrityLog/오늘 노드를 실시간 감시.
+// - ackedAt 있으면 → 배너 강제 제거 (누가 언제 처리해도 즉시 반영)
+// - ackedAt 없고 issues 있으면 → 배너 표시
+// - issues 없으면 → 초록 배너 (한 번만)
 function runIntegrityCheck(){
   try{
     const today = new Date();
@@ -6164,75 +6171,75 @@ function runIntegrityCheck(){
     const currentActive = (S.db.students||[]).filter(s=>s&&s.active).length;
     const yesterdayChgs = ((S.db.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
 
-    // 오늘 이미 관리자가 확인 처리했는지 먼저 확인
-    firebase.database().ref(DB_KEY+'/integrityLog/'+tStr+'/ackedAt').once('value').then(ackSnap=>{
-      const alreadyAcked = !!ackSnap.val();
+    // 1단계: 어제 백업 조회 + issues 계산 (배너는 아직 표시 X)
+    firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
+      const backup = snap.val();
+      const issues = [];
+      let backupOk = false;
+      let yesterdayActive = null;
 
-      // 어제 Firebase 백업 확인
-      firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
-        const backup = snap.val();
-        const issues = []; // 각 항목: {type, msg}
-        let backupOk = false;
-        let yesterdayActive = null;
+      if(backup && backup.data){
+        backupOk = true;
+        yesterdayActive = backup.activeStudentCount;
+        if(yesterdayActive && currentActive < yesterdayActive * 0.9){
+          issues.push({type:'student_drop', msg:'학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명'});
+        }
+        const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
+        if(backupYChgs > yesterdayChgs + 3){
+          issues.push({type:'change_loss', msg:'어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)'});
+        }
+      } else {
+        issues.push({type:'no_backup', msg:'어제('+yStr+') 자동 백업 없음'});
+      }
 
-        if(backup && backup.data){
-          backupOk = true;
-          yesterdayActive = backup.activeStudentCount;
-          // 학생 수 급감 체크 (10% 이상 감소 시 경고)
-          if(yesterdayActive && currentActive < yesterdayActive * 0.9){
-            issues.push({type:'student_drop', msg:'학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명'});
-          }
-          // dailyChanges 손실 체크
-          const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
-          if(backupYChgs > yesterdayChgs + 3){
-            issues.push({type:'change_loss', msg:'어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)'});
-          }
+      // 2단계: 검증 결과를 Firebase에 기록 (ackedAt은 건드리지 않음)
+      try{
+        firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).update({
+          checkedAt: Date.now(),
+          currentActive, yesterdayActive, yesterdayChgs, backupOk,
+          issues: issues.length>0 ? issues.map(i=>i.msg) : null
+        }).catch(e=>console.warn('검증 로그 저장 실패:',e));
+      }catch(e){}
+
+      // 3단계: 정상이면 초록 배너 한 번만 (실시간 리스너 불필요)
+      if(issues.length===0){
+        showIntegrityBanner({
+          ok: true, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk
+        });
+        return;
+      }
+
+      // 4단계: 이슈 있으면 → integrityLog/오늘 노드에 실시간 리스너 등록
+      // 콜백이 등록 즉시 현재 값으로 한 번 실행 + 이후 값 변경 시마다 실행
+      const logRef = firebase.database().ref(DB_KEY+'/integrityLog/'+tStr);
+      // 기존 리스너가 있으면 제거 (중복 방지)
+      if(window.__integrityListener){
+        try{ window.__integrityListener.off(); }catch(e){}
+      }
+      logRef.on('value', logSnap=>{
+        const log = logSnap.val() || {};
+        const existingBar = document.getElementById('integrity_banner');
+        if(log.ackedAt){
+          // 이미 처리됨 → 배너 강제 제거
+          if(existingBar) existingBar.remove();
         } else {
-          issues.push({type:'no_backup', msg:'어제('+yStr+') 자동 백업 없음'});
-        }
-
-        // 정상이면 초록 배너, 이상 있는데 이미 처리됐으면 배너 안 띄움
-        if(issues.length===0){
-          showIntegrityBanner({
-            ok: true, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk
-          });
-        } else if(!alreadyAcked){
-          showIntegrityBanner({
-            ok: false, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk, today:tStr
-          });
-        }
-
-        // 실시간 리스닝: 다른 사용자가 처리하면 내 배너도 사라짐
-        if(issues.length>0){
-          const ackRef = firebase.database().ref(DB_KEY+'/integrityLog/'+tStr+'/ackedAt');
-          ackRef.on('value', snap=>{
-            if(snap.val()){
-              const bar = document.getElementById('integrity_banner');
-              if(bar) bar.remove();
-            }
-          });
-        }
-
-        // 검증 결과 로그 저장 (첫 감지 시에만 기본 정보 세팅)
-        try{
-          firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).update({
-            checkedAt: Date.now(),
-            currentActive, yesterdayActive, yesterdayChgs, backupOk,
-            issues: issues.length>0 ? issues.map(i=>i.msg) : null
-          }).catch(e=>console.warn('검증 로그 저장 실패:',e));
-        }catch(e){}
-      }).catch(e=>{
-        console.error('무결성 체크 실패:', e);
-        if(!alreadyAcked){
-          showIntegrityBanner({
-            ok: false,
-            issues: [{type:'firebase_error', msg:'Firebase 접근 실패: '+e.message}],
-            currentActive, yesterdayActive: null, yesterdayChgs, backupOk: false, today:tStr
-          });
+          // 미처리 → 배너 표시 (없을 때만)
+          if(!existingBar){
+            showIntegrityBanner({
+              ok: false, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk, today:tStr
+            });
+          }
         }
       });
+      window.__integrityListener = logRef;
     }).catch(e=>{
-      console.error('확인 상태 조회 실패:', e);
+      console.error('무결성 체크 실패:', e);
+      // Firebase 접근 실패 - 로컬에서만 판단
+      showIntegrityBanner({
+        ok: false,
+        issues: [{type:'firebase_error', msg:'Firebase 접근 실패: '+e.message}],
+        currentActive, yesterdayActive: null, yesterdayChgs, backupOk: false, today:tStr
+      });
     });
   }catch(e){
     console.error('무결성 체크 실패:', e);
