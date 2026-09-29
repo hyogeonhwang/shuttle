@@ -818,6 +818,8 @@ function initDB(){
         migrateDB();
         // 자동 스냅샷 저장 (매 접속시)
         autoSnapshot();
+        // 무결성 체크 (매 접속시 1회, 이상 있으면 배너 표시)
+        setTimeout(runIntegrityCheck, 2000);
       } else {
         const saved = localStorage.getItem(DB_KEY);
         if(saved){try{S.db=JSON.parse(saved);}catch(e){S.db=JSON.parse(JSON.stringify(PRESET_DB));}}
@@ -4239,7 +4241,7 @@ function updateClass(school,idx,val){
 function buildSettingsSystem(){
   const year=new Date().getFullYear();
   const today=new Date().toISOString().slice(0,10);
-  // 스냅샷 목록
+  // localStorage 스냅샷 목록
   const snapshots=[];
   for(let i=0;i<localStorage.length;i++){
     const k=localStorage.key(i);
@@ -4255,25 +4257,28 @@ function buildSettingsSystem(){
           meta.teachers=(obj.teachers||[]).length;
         }
       }catch(e){}
-      snapshots.push({d,meta});
+      snapshots.push({d,meta,source:'local'});
     }
   }
   snapshots.sort((a,b)=>b.d.localeCompare(a.d));
 
   return `
 <div style="border:2px solid #dcfce7;border-radius:10px;overflow:hidden;margin-bottom:16px">
-  <div style="background:#f0fdf4;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="const b=document.getElementById('snap_body');const a=document.getElementById('snap_arrow');if(b.style.display==='none'){b.style.display='block';a.textContent='▲';}else{b.style.display='none';a.textContent='▼';}">
+  <div style="background:#f0fdf4;padding:12px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" onclick="const b=document.getElementById('snap_body');const a=document.getElementById('snap_arrow');if(b.style.display==='none'){b.style.display='block';a.textContent='▲';loadFirebaseSnapshots();}else{b.style.display='none';a.textContent='▼';}">
     <div style="display:flex;align-items:center;gap:8px">
       <span style="font-size:18px">🛡️</span>
       <div>
         <div style="font-size:13px;font-weight:900;color:#166534">자동 스냅샷 복구</div>
-        <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 자동 저장됩니다. 최근 7일치 보관. (${snapshots.length}개)</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 Firebase(☁️) + 브라우저(📱)에 자동 저장. 최근 7일치.</div>
       </div>
     </div>
     <span id="snap_arrow" style="font-size:11px;color:#166534">▼</span>
   </div>
   <div id="snap_body" style="display:none;padding:12px 16px;border-top:1px solid #dcfce7">
-    ${snapshots.length===0?`<div style="font-size:12px;color:#9ca3af">저장된 스냅샷이 없습니다<br><small>오늘 접속 후 자동 저장됩니다</small></div>`:
+    <div style="font-size:11px;color:#166534;font-weight:800;margin-bottom:8px;padding:6px 10px;background:#dcfce7;border-radius:5px">☁️ Firebase 백업 (기기 무관, 우선 추천)</div>
+    <div id="fb_snap_list" style="margin-bottom:14px;font-size:12px;color:#9ca3af">불러오는 중...</div>
+    <div style="font-size:11px;color:#0369a1;font-weight:800;margin-bottom:8px;padding:6px 10px;background:#dbeafe;border-radius:5px">📱 이 브라우저 백업 (${snapshots.length}개)</div>
+    ${snapshots.length===0?`<div style="font-size:12px;color:#9ca3af">저장된 브라우저 스냅샷이 없습니다</div>`:
     snapshots.map(({d,meta})=>{
       const isToday=d===today;
       return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:0.5px solid #f0f4f0">
@@ -5979,6 +5984,73 @@ function closeModal(){
 }
 function el(id){return document.getElementById(id)}
 
+// Firebase 스냅샷 목록 비동기 로드
+function loadFirebaseSnapshots(){
+  const listEl = document.getElementById('fb_snap_list');
+  if(!listEl) return;
+  const today = new Date().toISOString().slice(0,10);
+  try{
+    firebase.database().ref(DB_KEY+'/snapshots').once('value').then(snap=>{
+      const all = snap.val() || {};
+      const dates = Object.keys(all).sort().reverse();
+      if(dates.length===0){
+        listEl.innerHTML = '<div style="font-size:12px;color:#9ca3af">저장된 Firebase 스냅샷이 없습니다<br><small>오늘 접속 시 자동 저장됩니다</small></div>';
+        return;
+      }
+      listEl.innerHTML = dates.map(d=>{
+        const meta = all[d] || {};
+        const isToday = d===today;
+        const savedTime = meta.savedAt ? new Date(meta.savedAt).toLocaleString('ko-KR',{hour:'2-digit',minute:'2-digit'}) : '';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:0.5px solid #f0f4f0">'+
+          '<div>'+
+            '<div style="display:flex;align-items:center;gap:7px;margin-bottom:4px">'+
+              '<span style="font-size:13px;font-weight:700;color:#374151">☁️ '+d+'</span>'+
+              (isToday?'<span style="font-size:9px;font-weight:700;background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px">오늘</span>':'')+
+              (savedTime?'<span style="font-size:10px;color:#9ca3af">'+savedTime+'</span>':'')+
+            '</div>'+
+            '<div style="display:flex;gap:10px">'+
+              '<span style="font-size:10px;color:#9ca3af">학생 <b style="color:#374151">'+(meta.activeStudentCount||0)+'명</b></span>'+
+              '<span style="font-size:10px;color:#9ca3af">노선 <b style="color:#374151">'+(meta.routeCount||0)+'개</b></span>'+
+              '<span style="font-size:10px;color:#9ca3af">변경 <b style="color:#374151">'+(meta.dailyChangesCount||0)+'일치</b></span>'+
+            '</div>'+
+          '</div>'+
+          '<button class="btn btn-sec btn-sm" style="'+(isToday?'border-color:#86efac;color:#166534':'')+'" onclick="restoreFirebaseSnapshot(\''+d+'\')">↩ 복구</button>'+
+        '</div>';
+      }).join('');
+    }).catch(e=>{
+      listEl.innerHTML = '<div style="font-size:12px;color:#dc2626">❌ Firebase 접근 실패: '+esc(e.message)+'</div>';
+    });
+  }catch(e){
+    listEl.innerHTML = '<div style="font-size:12px;color:#dc2626">❌ 로드 실패: '+esc(e.message)+'</div>';
+  }
+}
+
+// Firebase 스냅샷에서 복구
+function restoreFirebaseSnapshot(date){
+  if(!confirm(date+' Firebase 백업으로 복구하시겠습니까?\n\n⚠️ 현재 데이터가 해당 날짜 백업으로 완전히 교체됩니다.\n⚠️ 이 작업은 되돌릴 수 없으니 신중히 결정하세요.')) return;
+  const pw=prompt('관리자 비밀번호를 입력하세요:');
+  if(pw===null)return;
+  if(pw!==S.db.settings?.adminPw){showToast('❌ 비밀번호가 틀렸습니다');return;}
+  showToast('☁️ Firebase에서 복구 중...');
+  try{
+    firebase.database().ref(DB_KEY+'/snapshots/'+date).once('value').then(snap=>{
+      const backup = snap.val();
+      if(!backup || !backup.data){
+        showToast('❌ 백업 데이터가 없습니다');
+        return;
+      }
+      S.db = backup.data;
+      save();
+      showToast('✅ '+date+' Firebase 백업으로 복구 완료');
+      setTimeout(()=>{location.reload();}, 1500);
+    }).catch(e=>{
+      showToast('❌ 복구 실패: '+e.message);
+    });
+  }catch(e){
+    showToast('❌ 복구 실패: '+e.message);
+  }
+}
+
 function restoreSnapshot(date){
   if(!confirm(`${date} 스냅샷으로 복구하시겠습니까?\n현재 데이터가 해당 날짜 데이터로 교체됩니다.`))return;
   const pw=prompt('관리자 비밀번호를 입력하세요:');
@@ -5995,9 +6067,12 @@ function restoreSnapshot(date){
 }
 
 function autoSnapshot(){
+  const now=new Date();
+  const dateStr = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+
+  // 1) localStorage 스냅샷 (보조 백업, 브라우저별 저장)
   try{
-    const now=new Date();
-    const key='shuttle_snapshot_'+now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    const key='shuttle_snapshot_'+dateStr;
     // 오늘 스냅샷이 이미 있으면 저장 안 함
     if(!localStorage.getItem(key)){
       localStorage.setItem(key, JSON.stringify(S.db));
@@ -6010,7 +6085,154 @@ function autoSnapshot(){
         }
       }
     }
-  }catch(e){console.warn('스냅샷 저장 실패:',e);}
+  }catch(e){console.warn('localStorage 스냅샷 저장 실패:',e);}
+
+  // 2) Firebase 스냅샷 (주 백업, 기기 무관 공유)
+  try{
+    const snapRef = firebase.database().ref(DB_KEY+'/snapshots/'+dateStr);
+    snapRef.once('value').then(snap=>{
+      // 오늘 이미 저장됐으면 건너뜀
+      if(snap.val() && snap.val().data) return;
+      // 새로 저장
+      const backupData = {
+        savedAt: Date.now(),
+        savedBy: navigator.userAgent.substring(0,50),
+        studentCount: (S.db.students||[]).length,
+        activeStudentCount: (S.db.students||[]).filter(s=>s&&s.active).length,
+        classCount: Object.keys(S.db.classes||{}).length,
+        busCount: (S.db.buses||[]).length,
+        routeCount: Object.keys(S.db.routeLabels||{}).length,
+        teacherCount: (S.db.teachers||[]).length,
+        dailyChangesCount: Object.keys(S.db.dailyChanges||{}).length,
+        data: S.db
+      };
+      snapRef.set(backupData).then(()=>{
+        console.log('✅ Firebase 스냅샷 저장 완료:', dateStr);
+        cleanupOldFirebaseSnapshots();
+      }).catch(e=>{
+        console.error('❌ Firebase 스냅샷 저장 실패:', e);
+        showSnapshotErrorBanner(e.message);
+      });
+    }).catch(e=>{
+      console.error('❌ Firebase 스냅샷 확인 실패:', e);
+      showSnapshotErrorBanner(e.message);
+    });
+  }catch(e){
+    console.error('❌ Firebase 스냅샷 로직 실패:', e);
+    showSnapshotErrorBanner(e.message);
+  }
+}
+
+// 7일 이전 Firebase 스냅샷 자동 삭제
+function cleanupOldFirebaseSnapshots(){
+  try{
+    firebase.database().ref(DB_KEY+'/snapshots').once('value').then(snap=>{
+      const all = snap.val() || {};
+      const now = new Date();
+      Object.keys(all).forEach(dateKey=>{
+        try{
+          const d = new Date(dateKey);
+          if((now-d) > 7*24*60*60*1000){
+            firebase.database().ref(DB_KEY+'/snapshots/'+dateKey).remove();
+          }
+        }catch(e){}
+      });
+    });
+  }catch(e){console.warn('오래된 Firebase 스냅샷 정리 실패:',e);}
+}
+
+// Firebase 스냅샷 저장 실패 알림 배너
+function showSnapshotErrorBanner(errMsg){
+  const existing = document.getElementById('snap_error_bar');
+  if(existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = 'snap_error_bar';
+  bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;padding:10px 16px;font-size:13px;font-weight:800;text-align:center;box-shadow:0 2px 12px rgba(0,0,0,0.3)';
+  bar.innerHTML = '⚠️ 자동 백업 실패! 수동 [💾 데이터 백업] 실행하세요. ('+esc(errMsg||'unknown')+') <button onclick="this.parentElement.remove()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:800;cursor:pointer">닫기</button>';
+  document.body.appendChild(bar);
+}
+
+// 매일 아침 무결성 체크 - 데이터 이상 자동 감지
+function runIntegrityCheck(){
+  try{
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate()-1);
+    const yStr = yesterday.getFullYear()+'-'+String(yesterday.getMonth()+1).padStart(2,'0')+'-'+String(yesterday.getDate()).padStart(2,'0');
+    const tStr = today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+String(today.getDate()).padStart(2,'0');
+
+    const currentActive = (S.db.students||[]).filter(s=>s&&s.active).length;
+    const yesterdayChgs = ((S.db.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
+
+    // 어제 Firebase 백업 확인
+    firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
+      const backup = snap.val();
+      const issues = [];
+      let backupOk = false;
+      let yesterdayActive = null;
+
+      if(backup && backup.data){
+        backupOk = true;
+        yesterdayActive = backup.activeStudentCount;
+        // 학생 수 급감 체크 (10% 이상 감소 시 경고)
+        if(yesterdayActive && currentActive < yesterdayActive * 0.9){
+          issues.push('학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명');
+        }
+        // dailyChanges 손실 체크
+        const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
+        if(backupYChgs > yesterdayChgs + 3){
+          issues.push('어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)');
+        }
+      } else {
+        issues.push('어제('+yStr+') 자동 백업 없음');
+      }
+
+      showIntegrityBanner({
+        ok: issues.length===0,
+        issues,
+        currentActive,
+        yesterdayActive,
+        yesterdayChgs,
+        backupOk
+      });
+
+      // 검증 결과 로그 저장
+      try{
+        firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).set({
+          checkedAt: Date.now(),
+          currentActive, yesterdayActive, yesterdayChgs, backupOk,
+          issues: issues.length>0 ? issues : null
+        }).catch(e=>console.warn('검증 로그 저장 실패:',e));
+      }catch(e){}
+    }).catch(e=>{
+      console.error('무결성 체크 실패:', e);
+      showIntegrityBanner({
+        ok: false,
+        issues: ['Firebase 접근 실패'],
+        currentActive, yesterdayActive: null, yesterdayChgs, backupOk: false
+      });
+    });
+  }catch(e){
+    console.error('무결성 체크 실패:', e);
+  }
+}
+
+// 무결성 체크 결과 배너
+function showIntegrityBanner(r){
+  const existing = document.getElementById('integrity_banner');
+  if(existing) existing.remove();
+  const bar = document.createElement('div');
+  bar.id = 'integrity_banner';
+  if(r.ok){
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9998;background:#065f46;color:#fff;padding:9px 16px;font-size:12px;font-weight:700;text-align:center;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
+    bar.innerHTML = '✅ 오늘 검증 완료 · 재원생 '+r.currentActive+'명 · 어제 백업 정상 · 어제 변경 '+r.yesterdayChgs+'건 <button onclick="this.parentElement.remove()" style="margin-left:10px;background:#fff;color:#065f46;border:none;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">닫기</button>';
+    // 8초 후 자동 사라짐
+    setTimeout(()=>{if(bar.parentElement) bar.remove();}, 8000);
+  } else {
+    bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;padding:14px 16px;font-size:13px;font-weight:800;text-align:center;box-shadow:0 4px 16px rgba(0,0,0,0.35)';
+    bar.innerHTML = '🚨 데이터 이상 감지 🚨<div style="font-size:12px;font-weight:600;margin-top:6px;line-height:1.5">'+r.issues.map(i=>'• '+esc(i)).join('<br>')+'</div><button onclick="this.parentElement.remove()" style="margin-top:10px;background:#fff;color:#dc2626;border:none;padding:5px 14px;border-radius:4px;font-size:11px;font-weight:800;cursor:pointer">확인함</button>';
+  }
+  document.body.appendChild(bar);
 }
 
 function backupData(){
