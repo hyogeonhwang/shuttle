@@ -193,10 +193,9 @@ window.__lastSyncAt = 0;
 async function forceResyncFromFirebase(reason){
   if(!USE_FIREBASE || !_fbDb) return;
   try {
-    const today = getTodayKey ? getTodayKey() : (function(){
-      const d = new Date();
-      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    })();
+    // v15 fix: getTodayKey 함수 참조 제거, 직접 계산
+    const d = new Date();
+    const today = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     
     // 어제 날짜 계산
     const y = new Date();
@@ -8568,6 +8567,17 @@ function bindEvents(){
 startApp();
 // Firebase 사용 시 initDB 내부에서 render() 호출하므로 여기선 스킵
 if(!USE_FIREBASE) render();
+
+// v15: 자동 재동기화 시스템 - 로그인 상태와 무관하게 페이지 로드 시 무조건 시작
+// (기존에는 doAnonymousLogin 내부에서만 호출 → 재접속 시 시작 안 되는 버그)
+setTimeout(function(){
+  try {
+    if(!window.__resyncInitialized && typeof initAutoResync === 'function'){
+      window.__resyncInitialized = true;
+      initAutoResync();
+    }
+  } catch(e){ console.warn('[v15] 재동기화 시작 실패:', e); }
+}, 2000);
 </script>
 </body>
 </html>
