@@ -1,4 +1,4 @@
-<!-- v13 redeploy 2026-09-29 - version check + optimistic locking -->
+<!-- v14 redeploy 2026-09-30 - save() 안전화 + snapshot 보호 -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -6,8 +6,8 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="app-version" content="13">
-<title>셔틀버스 관리시스템 v13</title>
+<meta name="app-version" content="14">
+<title>셔틀버스 관리시스템 v14</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <!-- Firebase SDK -->
@@ -497,8 +497,9 @@ const ALL_DAYS=DAYS;
 const SCHOOL_KO={altiora:'알티오라',petamus:'페타무스',pangram:'팬그램'};
 const BUS_COLORS={'2':'#9c27b0','3':'#673ab7','5':'#1565c0','7':'#2e7d32','8':'#bf360c'};
 const DB_KEY='shuttle_v4';
-// v13: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
-const APP_VERSION = 13;
+// v14: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
+// v14 변경사항: save()가 dailyChanges 건드리지 않도록 수정 + cleanupOldFirebaseSnapshots 안전화
+const APP_VERSION = 14;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -926,9 +927,18 @@ function initDB(){
         if(saved){try{S.db=JSON.parse(saved);}catch(e){S.db=JSON.parse(JSON.stringify(PRESET_DB));}}
         else S.db=JSON.parse(JSON.stringify(PRESET_DB));
         migrateDB();
-        // v13: 오래된 버전은 초기 업로드도 차단 (혹시라도 옛날 preset으로 덮어쓰지 못하게)
+        // v14: 초기 업로드도 dailyChanges/snapshots 등 절대 통째로 안 덮어씀
+        // - preset DB는 학생/노선 정보만 초기화
+        // - dailyChanges 등은 그대로 유지
         if(!window.__blockWrites){
-          _fbRef.set(S.db).catch(e=>console.warn('Firebase 초기 업로드 실패:', e));
+          const dbToUpload = {};
+          for(const key in S.db){
+            if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+              continue;
+            }
+            dbToUpload[key] = S.db[key];
+          }
+          _fbRef.update(dbToUpload).catch(e=>console.warn('Firebase 초기 업로드 실패:', e));
         }
       }
       render();
@@ -1255,14 +1265,26 @@ function migrateStopsFromStudents(){
 function save(){
   // v13: 오래된 버전은 Firebase 쓰기 차단 (데이터 덮어쓰기 방지)
   if(window.__blockWrites){
-    console.warn('[v13 BLOCKED] 오래된 버전에서 save() 시도 - Firebase 쓰기 차단됨');
+    console.warn('[v14 BLOCKED] 오래된 버전에서 save() 시도 - Firebase 쓰기 차단됨');
     return;
   }
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
     _fbIgnoreUntil = Date.now() + 15000;
-    _fbRef.set(S.db)
+    // v14 핵심 수정: dailyChanges와 snapshots는 절대 통째로 덮어쓰지 않음
+    // - dailyChanges는 setDayChanges에서 낙관적 잠금으로 관리
+    // - snapshots는 autoSnapshot에서 개별 관리
+    // - save()는 학생/노선/설정 등 그 외 데이터만 저장
+    const dbToSave = {};
+    for(const key in S.db){
+      if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+        continue; // 이 필드들은 별도 관리
+      }
+      dbToSave[key] = S.db[key];
+    }
+    // update()로 지정 필드만 갱신 - dailyChanges 등은 건드리지 않음
+    _fbRef.update(dbToSave)
       .then(()=>{
         _fbIgnoreUntil = Date.now() + 3000;
         _fbSaveFailed = false;
@@ -6274,17 +6296,27 @@ function autoSnapshot(){
   }
 }
 
-// 7일 이전 Firebase 스냅샷 자동 삭제
+// v14: 30일 이전 Firebase 스냅샷 자동 삭제 (최근 3일은 절대 안 지움)
 function cleanupOldFirebaseSnapshots(){
   try{
     firebase.database().ref(DB_KEY+'/snapshots').once('value').then(snap=>{
       const all = snap.val() || {};
       const now = new Date();
+      // 최근 3일은 절대 보호 (오늘, 어제, 그저께)
+      const protectedDates = new Set();
+      for(let i=0; i<=3; i++){
+        const d = new Date(now);
+        d.setDate(d.getDate()-i);
+        const key = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+        protectedDates.add(key);
+      }
       Object.keys(all).forEach(dateKey=>{
         try{
+          if(protectedDates.has(dateKey)) return; // 최근 3일 절대 보호
           const d = new Date(dateKey);
-          if((now-d) > 7*24*60*60*1000){
+          if((now-d) > 30*24*60*60*1000){ // 30일 이전만 삭제
             firebase.database().ref(DB_KEY+'/snapshots/'+dateKey).remove();
+            console.log('[v14 cleanup] 오래된 스냅샷 삭제:', dateKey);
           }
         }catch(e){}
       });
@@ -7410,16 +7442,24 @@ function saveStudentRoutes(sid){
 function saveAndWait(){
   // v13: 오래된 버전은 Firebase 쓰기 차단
   if(window.__blockWrites){
-    console.warn('[v13 BLOCKED] 오래된 버전에서 saveAndWait 시도 - 차단됨');
+    console.warn('[v14 BLOCKED] 오래된 버전에서 saveAndWait 시도 - 차단됨');
     showToast('⚠️ 앱이 오래됐습니다. 새로고침 후 다시 시도하세요.');
-    return Promise.reject(new Error('앱 버전이 오래됨 (v13 blocking)'));
+    return Promise.reject(new Error('앱 버전이 오래됨 (v14 blocking)'));
   }
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
     _fbIgnoreUntil = Date.now() + 12000;
-    console.log('[saveAndWait] Firebase .set() 호출');
-    return _fbRef.set(S.db)
+    // v14: dailyChanges/snapshots/integrityLog/appConfig/smsHistory 제외 update
+    const dbToSave = {};
+    for(const key in S.db){
+      if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+        continue;
+      }
+      dbToSave[key] = S.db[key];
+    }
+    console.log('[saveAndWait v14] Firebase .update() 호출 (dailyChanges 제외)');
+    return _fbRef.update(dbToSave)
       .then(()=>{
         _fbIgnoreUntil = Date.now() + 2000;
         console.log('[saveAndWait] Firebase .set() 완료');
