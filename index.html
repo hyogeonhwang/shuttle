@@ -41,6 +41,105 @@ let _fbAuth = null;
 let _fbSaveTimer = null;
 let _fbIgnoreUntil = 0;
 
+// ==========================================================================
+// v16: 변경내역 건별 저장 구조
+// ==========================================================================
+// Firebase: shuttle_v4/changes/{날짜}/{변경id} = 변경 1건
+//   - 추가/수정: 해당 id 경로만 쓰기
+//   - 삭제: 해당 id 경로만 null
+//   → 여러 기기가 동시에 저장해도 서로의 건을 덮어쓰거나 되살리지 않음
+// 앱 내부(S.db.dailyChanges[날짜])는 기존처럼 배열 유지 → 화면 로직은 그대로
+// 옛 경로(shuttle_v4/dailyChanges)는 v16부터 읽기·쓰기 안 함 (이관 원본 백업으로 보존)
+const CHG_PATH = 'shuttle_v4/changes';
+const CHG_MIGRATED_FLAG = 'shuttle_v4/appConfig/changesV16MigratedAt';
+const NON_DB_KEYS = ['dailyChanges','changes','snapshots','integrityLog','appConfig','smsHistory'];
+let _chgShadow = {};   // {날짜: {id: 정렬JSON}} - 마지막으로 확인된 Firebase 상태
+
+function stableStringify(v){
+  if(v===null||typeof v!=='object') return JSON.stringify(v);
+  if(Array.isArray(v)) return '['+v.map(x=>stableStringify(x===undefined?null:x)).join(',')+']';
+  return '{'+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+stableStringify(v[k])).join(',')+'}';
+}
+function cleanChg(c){ return JSON.parse(JSON.stringify(c)); } // undefined 제거 (Firebase는 undefined 거부)
+
+// Firebase 노드(객체 또는 옛 배열) → 배열 (등록순)
+function chgNormalize(node){
+  if(!node) return [];
+  const vals = Array.isArray(node) ? node : Object.values(node);
+  return vals.filter(c=>c && typeof c==='object' && c.id)
+    .sort((a,b)=>((a.timestamp||0)-(b.timestamp||0)) || (a.id<b.id?-1:a.id>b.id?1:0));
+}
+function chgTreeToDaily(tree){
+  const out = {};
+  for(const [d,node] of Object.entries(tree||{})){
+    const arr = chgNormalize(node);
+    if(arr.length) out[d] = arr;
+  }
+  return out;
+}
+function chgRebuildShadow(tree){
+  _chgShadow = {};
+  for(const [d,node] of Object.entries(tree||{})){
+    _chgShadow[d] = {};
+    for(const c of chgNormalize(node)) _chgShadow[d][c.id] = stableStringify(c);
+  }
+}
+function chgSetShadowDate(date, arr){
+  _chgShadow[date] = {};
+  for(const c of (arr||[])) if(c&&c.id) _chgShadow[date][c.id] = stableStringify(c);
+}
+
+// localStorage 저장 (용량 초과 등으로 실패해도 Firebase 저장은 계속 진행)
+function safeLocalSave(){
+  try{
+    const copy = {};
+    for(const k in S.db){ if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='changes') continue; copy[k]=S.db[k]; }
+    localStorage.setItem(DB_KEY, JSON.stringify(copy));
+  }catch(e){ console.warn('[v16] localStorage 저장 실패(무시):', e && e.message); }
+}
+
+// 최초 로드 시: 옛 구조 → 새 구조 1회 이관 + S.db.dailyChanges 구성
+async function v16PrepareChanges(){
+  let tree = S.db.changes || {};
+  const oldDaily = S.db.dailyChanges || {};
+  // 관리용 노드는 메모리에서 제거 (백업 안에 백업이 중첩되는 문제 방지)
+  delete S.db.changes; delete S.db.snapshots; delete S.db.integrityLog; delete S.db.smsHistory; delete S.db.appConfig;
+  let migrated = null;
+  try{ migrated = (await _fbDb.ref(CHG_MIGRATED_FLAG).once('value')).val(); }catch(e){ console.warn('[v16] 이관 플래그 확인 실패', e); }
+  window.__v16MigratedAt = migrated || Date.now();
+  if(!migrated){
+    const updates = {};
+    let cnt = 0;
+    for(const [d,node] of Object.entries(oldDaily)){
+      const arr = Array.isArray(node) ? node : Object.values(node||{});
+      arr.forEach((c,i)=>{
+        if(!c || typeof c!=='object') return;
+        const id = c.id || ('m'+d.replace(/-/g,'')+'_'+i);
+        if(tree[d] && tree[d][id]) return; // 이미 새 구조에 있으면 그대로
+        updates[d+'/'+id] = cleanChg({...c, id});
+        cnt++;
+      });
+    }
+    // 화면 표시용으로는 이관 성공 여부와 무관하게 반영
+    for(const [p,c] of Object.entries(updates)){
+      const [d,id] = p.split('/');
+      tree[d] = tree[d] || {};
+      tree[d][id] = c;
+    }
+    try{
+      if(cnt>0) await _fbDb.ref(CHG_PATH).update(updates);
+      await _fbDb.ref(CHG_MIGRATED_FLAG).set(window.__v16MigratedAt);
+      console.log('[v16 이관] 옛 변경내역 '+cnt+'건 → '+CHG_PATH+' 이관 완료');
+    }catch(e){
+      console.error('[v16 이관 실패]', e);
+      alert('⚠️ 변경내역 데이터 이관에 실패했습니다.\n원장님께 알려주세요.\n\n'+(e&&e.message));
+    }
+  }
+  S.db.dailyChanges = chgTreeToDaily(tree);
+  chgRebuildShadow(tree);
+  return tree;
+}
+
 function initFirebase(){
   if(!USE_FIREBASE) return false;
   try {
@@ -203,17 +302,21 @@ async function forceResyncFromFirebase(reason){
     const yesterday = y.getFullYear()+'-'+String(y.getMonth()+1).padStart(2,'0')+'-'+String(y.getDate()).padStart(2,'0');
     
     // 오늘 강제 재로드
-    const todaySnap = await _fbDb.ref('shuttle_v4/dailyChanges/'+today).once('value');
-    const todayArr = todaySnap.val() || [];
+    if(!window.__v16Ready) return; // v16: 최초 로드·이관 완료 전에는 재동기화 안 함
+    // v16: 새 경로(건별 저장)에서 읽기
+    const todaySnap = await _fbDb.ref(CHG_PATH+'/'+today).once('value');
+    const todayArr = chgNormalize(todaySnap.val());
     S.db.dailyChanges = S.db.dailyChanges || {};
     S.db.dailyChanges[today] = todayArr;
-    
+    chgSetShadowDate(today, todayArr);
+
     // 어제도 강제 재로드
-    const ySnap = await _fbDb.ref('shuttle_v4/dailyChanges/'+yesterday).once('value');
-    const yArr = ySnap.val() || [];
+    const ySnap = await _fbDb.ref(CHG_PATH+'/'+yesterday).once('value');
+    const yArr = chgNormalize(ySnap.val());
     S.db.dailyChanges[yesterday] = yArr;
-    
-    localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+    chgSetShadowDate(yesterday, yArr);
+
+    safeLocalSave();
     
     window.__lastSyncAt = Date.now();
     updateSyncBadge();
@@ -330,7 +433,7 @@ function startApp(){
     const saved = localStorage.getItem(PW_STORAGE_KEY);
     if(saved === _shuttlePassword){
       _fbAuth.signInAnonymously()
-        .then(()=>initDB())
+        .then(()=>{ checkAppVersion(); initDB(); })  // v16: 저장된 비밀번호로 자동 입장해도 버전 체크
         .catch(()=>{ localStorage.removeItem(PW_STORAGE_KEY); showPasswordScreen(); });
     } else {
       showPasswordScreen();
@@ -340,7 +443,7 @@ function startApp(){
     const saved = localStorage.getItem(PW_STORAGE_KEY);
     if(saved === _shuttlePassword){
       _fbAuth.signInAnonymously()
-        .then(()=>initDB())
+        .then(()=>{ checkAppVersion(); initDB(); })  // v16: 저장된 비밀번호로 자동 입장해도 버전 체크
         .catch(()=>{ localStorage.removeItem(PW_STORAGE_KEY); showPasswordScreen(); });
     } else {
       showPasswordScreen();
@@ -621,7 +724,8 @@ const BUS_COLORS={'2':'#9c27b0','3':'#673ab7','5':'#1565c0','7':'#2e7d32','8':'#
 const DB_KEY='shuttle_v4';
 // v15: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
 // v15 변경사항: 실시간 동기화 강화 (visibilitychange 자동 재로드 + 30초 주기 재동기화 + _fbIgnoreUntil 축소)
-const APP_VERSION = 15;
+// v16 변경사항: 변경내역을 건별 경로(shuttle_v4/changes/날짜/id)로 저장 → 삭제·수정이 되살아나는 문제 근본 해결
+const APP_VERSION = 16;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -1035,10 +1139,11 @@ function initDB(){
         <div style="font-size:11px;color:#9ca3af">Firebase 연결 중</div>
       </div>`;
     // 전체 DB 최초 1회 로드
-    _fbRef.once('value').then(snap=>{
+    _fbRef.once('value').then(async snap=>{
       const fbData = snap.val();
       if(fbData && fbData.students){
         S.db = fbData;
+        await v16PrepareChanges();  // v16: 새 경로에서 변경내역 구성 (최초 1회 이관 포함)
         migrateDB();
         // 자동 스냅샷 저장 (매 접속시)
         autoSnapshot();
@@ -1048,6 +1153,10 @@ function initDB(){
         const saved = localStorage.getItem(DB_KEY);
         if(saved){try{S.db=JSON.parse(saved);}catch(e){S.db=JSON.parse(JSON.stringify(PRESET_DB));}}
         else S.db=JSON.parse(JSON.stringify(PRESET_DB));
+        // v16: 변경내역은 Firebase 새 경로 기준
+        const _t=(fbData&&fbData.changes)||{};
+        for(const k of NON_DB_KEYS) delete S.db[k];
+        S.db.dailyChanges=chgTreeToDaily(_t); chgRebuildShadow(_t);
         migrateDB();
         // v14: 초기 업로드도 dailyChanges/snapshots 등 절대 통째로 안 덮어씀
         // - preset DB는 학생/노선 정보만 초기화
@@ -1055,7 +1164,7 @@ function initDB(){
         if(!window.__blockWrites){
           const dbToUpload = {};
           for(const key in S.db){
-            if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+            if(NON_DB_KEYS.includes(key)){
               continue;
             }
             dbToUpload[key] = S.db[key];
@@ -1065,32 +1174,30 @@ function initDB(){
       }
       render();
 
-      // dailyChanges만 실시간 리스닝 (다른 사람 변경 감지)
-      // 초기 로드 시 리스너 첫 실행은 무시
+      window.__v16Ready = true;
+
+      // v16: 변경내역 실시간 리스닝 (새 경로, 건별 저장)
+      // - _fbIgnoreUntil로 무시하지 않음 (예전엔 저장 직후 3~15초간 들어온 다른 기기 변경을 통째로 버렸음)
+      // - 내 저장도 Firebase SDK가 즉시 반영하므로 항상 최신 상태 유지
       const _shownBannerIds=new Set(); // 이미 배너로 보여준 변경 ID 기억
       let chgListenerReady=false;
-      const chgRef=_fbDb.ref('shuttle_v4/dailyChanges');
+      const chgRef=_fbDb.ref(CHG_PATH);
       chgRef.on('value', snap=>{
+        const tree=snap.val()||{};
+        const newChgs=chgTreeToDaily(tree);
+        chgRebuildShadow(tree);
         if(!chgListenerReady){
-          // 초기 로드: 현재 있는 모든 변경 ID와 상태를 "이미 본 것"으로 등록
-          const initChgs=snap.val()||{};
-          Object.values(initChgs).forEach(arr=>{if(Array.isArray(arr))arr.forEach(c=>{if(c&&c.id)_shownBannerIds.add(c.id+':undone:'+(c.undone?'1':'0'));});});
+          // 첫 수신: 현재 있는 모든 변경을 "이미 본 것"으로 등록 (배너 안 띄움)
+          Object.values(newChgs).forEach(arr=>arr.forEach(c=>_shownBannerIds.add(c.id+':undone:'+(c.undone?'1':'0'))));
           chgListenerReady=true;
-          return;
         }
-        if(Date.now() < _fbIgnoreUntil) return;
-        const newChgs=snap.val();
-        if(!newChgs) return;
-        const prevJson=JSON.stringify(S.db.dailyChanges||{});
-        const newJson=JSON.stringify(newChgs);
-        if(prevJson===newJson) return; // 변경 없으면 무시
-
-        // 이전/새 데이터 비교해서 실제 바뀐 항목 찾기
         const prevChgs=S.db.dailyChanges||{};
+        if(stableStringify(prevChgs)===stableStringify(newChgs)) return; // 변경 없으면 무시
+
+        // 이전/새 데이터 비교해서 실제 바뀐 항목 찾기 (배너용)
         let changedChg=null;
         let isUndo=false;
         for(const [date,arr] of Object.entries(newChgs)){
-          if(!Array.isArray(arr))continue;
           const prevArr=prevChgs[date]||[];
           for(const c of arr){
             const prev=prevArr.find(p=>p.id===c.id);
@@ -1101,7 +1208,8 @@ function initDB(){
         }
 
         S.db.dailyChanges=newChgs;
-        localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+        safeLocalSave();
+        window.__lastSyncAt = Date.now();
         render();
         // 실제 변경된 항목이 있고 아직 안 보여준 것만 배너 표시
         if(changedChg){
@@ -1112,6 +1220,34 @@ function initDB(){
           }
         }
       });
+
+      // v16 전환기 브리지: 아직 새로고침 안 한 옛 버전(v15 이하) 기기가 옛 경로에 새로 등록한 건을 새 경로로 1회 옮김
+      // - 이관 시각 이후 등록된 건만, 같은 id는 한 번만 (옮긴 뒤 v16에서 삭제하면 다시 안 살아남)
+      try{
+        const bridged=new Set();
+        _fbDb.ref('shuttle_v4/appConfig/v16Bridged').on('value', sn=>{ Object.keys(sn.val()||{}).forEach(k=>bridged.add(k)); });
+        _fbDb.ref('shuttle_v4/dailyChanges').on('value', sn=>{
+          if(window.__blockWrites) return;
+          const old=sn.val()||{};
+          const since=window.__v16MigratedAt||Date.now();
+          const up={};
+          for(const [d,node] of Object.entries(old)){
+            const arr=Array.isArray(node)?node:Object.values(node||{});
+            for(const c of arr){
+              if(!c||typeof c!=='object'||!c.id||!(c.timestamp>since))continue;
+              if(bridged.has(c.id))continue;
+              if(_chgShadow[d]&&_chgShadow[d][c.id])continue;
+              up['changes/'+d+'/'+c.id]=cleanChg(c);
+              up['appConfig/v16Bridged/'+c.id]=true;
+              bridged.add(c.id);
+            }
+          }
+          if(Object.keys(up).length){
+            console.log('[v16 브리지] 옛 버전 기기 등록분 '+(Object.keys(up).length/2)+'건 새 경로로 이동');
+            _fbRef.update(up).catch(e=>console.warn('[v16 브리지 실패]',e));
+          }
+        });
+      }catch(e){ console.warn('[v16 브리지 초기화 실패]',e); }
 
       // students 실시간 리스닝 (신규 학생 등록 등 감지)
       let stuListenerReady=false;
@@ -1125,7 +1261,7 @@ function initDB(){
         const newJson=JSON.stringify(newStus);
         if(prevJson===newJson) return;
         S.db.students=newStus;
-        localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+        safeLocalSave();
         render();
         showChangeBanner();
       });
@@ -1391,7 +1527,7 @@ function save(){
     return;
   }
   S.db._savedAt = Date.now();
-  localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+  safeLocalSave();
   if(USE_FIREBASE && _fbRef){
     _fbIgnoreUntil = Date.now() + 3000;  // v15: 15초 → 3초 (다른 사용자 변경 무시 시간 축소)
     // v14 핵심 수정: dailyChanges와 snapshots는 절대 통째로 덮어쓰지 않음
@@ -1400,7 +1536,7 @@ function save(){
     // - save()는 학생/노선/설정 등 그 외 데이터만 저장
     const dbToSave = {};
     for(const key in S.db){
-      if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+      if(NON_DB_KEYS.includes(key)){  // v16: changes 포함
         continue; // 이 필드들은 별도 관리
       }
       dbToSave[key] = S.db[key];
@@ -1442,70 +1578,58 @@ function getTeachersForRoute(rid){
 // BUSINESS LOGIC
 // ══════════════════════════════════════════════════════
 function getDayChanges(date){return S.db.dailyChanges[date]||[]}
-// v13: 낙관적 잠금(Optimistic Locking) 적용
-// - 저장 전 Firebase에서 최신 dailyChanges를 다시 가져옴
-// - 다른 사용자가 추가한 항목(local에 없는 ID)을 병합
-// - 병합된 결과를 저장 → 다른 사용자 데이터 덮어쓰기 방지
-// - 오래된 버전은 아예 저장 차단
+// v16: 변경내역 저장 - 건별 차이만 Firebase에 반영
+// - 마지막으로 확인된 Firebase 상태(_chgShadow)와 비교해서
+//   새로 생기거나 바뀐 건 → 그 id만 쓰기 / 사라진 건 → 그 id만 삭제(null)
+// - 다른 기기가 추가한 건은 건드리지 않고, 내가 지운 건은 다시 살아나지 않음
 function setDayChanges(date,arr){
-  // v13: 오래된 버전은 Firebase 쓰기 차단
   if(window.__blockWrites){
-    console.warn('[v13 BLOCKED] 오래된 버전에서 setDayChanges 시도 - 쓰기 차단됨');
+    console.warn('[BLOCKED] 오래된 버전에서 setDayChanges 시도 - 쓰기 차단됨');
     alert('⚠️ 앱이 오래됐습니다.\n\n새로고침 후 다시 시도해주세요.\n(잠시 후 자동 새로고침됩니다)');
     return;
   }
-  
+  arr=(arr||[]).filter(c=>c&&typeof c==='object');
   // 로컬 즉시 업데이트 (UI 반응성 유지)
   S.db.dailyChanges[date]=arr;
-  localStorage.setItem(DB_KEY, JSON.stringify(S.db));
-  
-  if(USE_FIREBASE && _fbDb){
-    _fbIgnoreUntil = Date.now() + 3000;  // v15: 15초 → 3초
-    
-    // v13: 낙관적 잠금 - 저장 전 remote 최신 상태 fetch → merge → save
-    _fbDb.ref('shuttle_v4/dailyChanges/'+date).once('value').then(remoteSnap=>{
-      const remoteArr = remoteSnap.val() || [];
-      
-      // Merge: local 우선, remote에만 있는 항목 append
-      // (같은 id는 local이 이김 = 사용자 방금 조작한 undone 등이 우선)
-      const localIds = new Set(arr.map(c=>c && c.id).filter(Boolean));
-      const merged = [...arr];
-      let addedFromRemote = 0;
-      for(const remoteItem of remoteArr){
-        if(remoteItem && remoteItem.id && !localIds.has(remoteItem.id)){
-          merged.push(remoteItem);
-          addedFromRemote++;
-        }
-      }
-      
-      if(addedFromRemote > 0){
-        console.log('[v13 낙관적 잠금] '+date+': remote에서 '+addedFromRemote+'건 병합됨');
-        // 병합된 결과를 로컬에도 반영
-        S.db.dailyChanges[date] = merged;
-        localStorage.setItem(DB_KEY, JSON.stringify(S.db));
-      }
-      
-      // 병합된 최종 결과 저장
-      return _fbDb.ref('shuttle_v4/dailyChanges/'+date).set(merged);
-    }).then(()=>{
-      _fbIgnoreUntil = Date.now() + 3000;
-      _fbSaveFailed = false;
-      const warn = document.getElementById('fb_save_warn');
-      if(warn) warn.style.display = 'none';
-    }).catch(e=>{
-      console.warn('dailyChanges 저장 실패:', e);
-      _fbSaveFailed = true;
-      let warn = document.getElementById('fb_save_warn');
-      if(!warn){
-        warn = document.createElement('div');
-        warn.id = 'fb_save_warn';
-        warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
-        warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
-        document.body.appendChild(warn);
-      }
-      warn.style.display = 'block';
-    });
+  safeLocalSave();
+
+  if(!(USE_FIREBASE && _fbDb)) return;
+  const shadow=_chgShadow[date]||{};
+  const updates={};
+  const keepIds=new Set();
+  for(const c of arr){
+    if(!c.id) c.id=uid();
+    keepIds.add(c.id);
+    const j=stableStringify(c);
+    if(shadow[c.id]!==j) updates[date+'/'+c.id]=cleanChg(c);
   }
+  for(const id of Object.keys(shadow)){
+    if(!keepIds.has(id)) updates[date+'/'+id]=null;
+  }
+  const n=Object.keys(updates).length;
+  if(!n) return;
+  // 그림자 상태 즉시 갱신 (연속 저장 시 중복 쓰기 방지)
+  chgSetShadowDate(date, arr);
+  console.log('[v16 저장] '+date+': '+Object.values(updates).filter(v=>v).length+'건 쓰기, '+Object.values(updates).filter(v=>!v).length+'건 삭제');
+  _fbDb.ref(CHG_PATH).update(updates).then(()=>{
+    _fbSaveFailed = false;
+    const warn = document.getElementById('fb_save_warn');
+    if(warn) warn.style.display = 'none';
+  }).catch(e=>{
+    console.warn('변경내역 저장 실패:', e);
+    _fbSaveFailed = true;
+    let warn = document.getElementById('fb_save_warn');
+    if(!warn){
+      warn = document.createElement('div');
+      warn.id = 'fb_save_warn';
+      warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#dc2626;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:700;font-family:inherit';
+      warn.innerHTML = '⚠️ Firebase 저장 실패! 데이터가 저장되지 않고 있습니다. <button onclick="location.reload()" style="margin-left:10px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px;font-weight:700">새로고침</button>';
+      document.body.appendChild(warn);
+    }
+    warn.style.display = 'block';
+    // 실패 시 서버 상태로 되돌려 화면과 실제 데이터 불일치 방지
+    forceResyncFromFirebase('저장실패_복구');
+  });
 }
 
 function getActiveChg(date,studentId,routeId){
@@ -6399,7 +6523,8 @@ function autoSnapshot(){
         routeCount: Object.keys(S.db.routeLabels||{}).length,
         teacherCount: (S.db.teachers||[]).length,
         dailyChangesCount: Object.keys(S.db.dailyChanges||{}).length,
-        data: S.db
+        // v16: 백업 안에 백업/로그가 중첩 저장되지 않도록 제외 (변경내역 dailyChanges는 포함)
+        data: (()=>{const d={};for(const k in S.db){if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='appConfig'||k==='changes')continue;d[k]=S.db[k];}return JSON.parse(JSON.stringify(d));})()
       };
       snapRef.set(backupData).then(()=>{
         console.log('✅ Firebase 스냅샷 저장 완료:', dateStr);
@@ -6962,10 +7087,13 @@ function saveChange(){
     chg.toTime=el('m_totime')?.value||d.toTime||'';
     if(!chg.toStop){alert('변경할 정류장을 선택하세요');return;}
   }
-  const arr=getDayChanges(S.date);
+  // v16: 수정 시 원래 항목의 id·등록일 유지 (예전엔 새 id로 저장돼 원본이 되살아나며 중복 발생)
+  const saveDate=d._editingId?(d._editingDate||S.date):S.date;
+  if(d._editingId)chg.id=d._editingId;
+  const arr=getDayChanges(saveDate);
   let filtered;
   if(d._editingId){
-    // 수정 모드: 기존 항목을 새 항목으로 교체 (ID 유지 위해 같은 위치에)
+    // 수정 모드: 기존 항목을 새 항목으로 교체 (ID 유지, 같은 위치에)
     filtered=arr.map(c=>c.id===d._editingId?chg:c);
     // 기존 항목이 없으면 추가
     if(!arr.find(c=>c.id===d._editingId))filtered.push(chg);
@@ -6974,8 +7102,8 @@ function saveChange(){
     filtered=arr.filter(c=>!(c.studentId===sid&&c.routeId===rid&&!c.undone));
     filtered.push(chg);
   }
-  setDayChanges(S.date,filtered);
-  S.lastChange={id:chg.id,date:S.date,desc:`${st.name} · ${typeKO[ctype]||ctype}${ctype==='bus_change'?` → ${getRoute(d.toRouteId)?.busId||'?'}호차`:''}${ctype==='absent'?'':''}`};
+  setDayChanges(saveDate,filtered);
+  S.lastChange={id:chg.id,date:saveDate,desc:`${st.name} · ${typeKO[ctype]||ctype}${ctype==='bus_change'?` → ${getRoute(d.toRouteId)?.busId||'?'}호차`:''}${ctype==='absent'?'':''}`};
   closeModal();
   showToast(`✅ ${st.name} ${typeKO[ctype]||ctype} 등록 완료`);
   render();
@@ -7569,13 +7697,13 @@ function saveAndWait(){
     return Promise.reject(new Error('앱 버전이 오래됨 (v14 blocking)'));
   }
   S.db._savedAt = Date.now();
-  localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+  safeLocalSave();
   if(USE_FIREBASE && _fbRef){
     _fbIgnoreUntil = Date.now() + 3000;  // v15: 12초 → 3초
     // v14: dailyChanges/snapshots/integrityLog/appConfig/smsHistory 제외 update
     const dbToSave = {};
     for(const key in S.db){
-      if(key === 'dailyChanges' || key === 'snapshots' || key === 'integrityLog' || key === 'appConfig' || key === 'smsHistory'){
+      if(NON_DB_KEYS.includes(key)){  // v16: changes 포함
         continue;
       }
       dbToSave[key] = S.db[key];
@@ -7615,8 +7743,11 @@ function deleteStudent(sid){
   if(!confirm(`[${s.name}] 학생을 완전히 삭제하시겠습니까?\n\n⚠️ 탑승 배정, 변경내역 모두 삭제되며 되돌릴 수 없습니다.`))return;
   S.db.students=S.db.students.filter(st=>st.id!==sid);
   // 변경내역에서도 해당 학생 기록 제거
+  // v16: 변경내역 삭제도 Firebase에 실제 반영
   for(const date of Object.keys(S.db.dailyChanges)){
-    S.db.dailyChanges[date]=S.db.dailyChanges[date].filter(c=>c.studentId!==sid);
+    const before=S.db.dailyChanges[date]||[];
+    const after=before.filter(c=>c.studentId!==sid);
+    if(after.length!==before.length)setDayChanges(date,after);
   }
   save();showToast(`🗑️ ${s.name} 삭제 완료`);closeModal();
 }
@@ -8215,6 +8346,8 @@ function executeCarryover(){
 
   S.db=newDb;
   save();
+  // v16: 변경내역(새 경로)도 실제 초기화
+  if(USE_FIREBASE&&_fbDb&&!window.__blockWrites){_fbDb.ref(CHG_PATH).remove().catch(e=>console.warn('변경내역 초기화 실패',e));_chgShadow={};}
   closeModal();
   const stuMsg=keepStudents?`학생 ${newDb.students.length}명 이월`:'학생 초기화';
   showToast(`✅ ${nextYear}학년도 이월 완료 — ${stuMsg}`);
@@ -8232,6 +8365,8 @@ function _doNewYearReset(){
   S.db.students=[];
   S.db.dailyChanges={};
   save();
+  // v16: 변경내역(새 경로)도 실제 초기화
+  if(USE_FIREBASE&&_fbDb&&!window.__blockWrites){_fbDb.ref(CHG_PATH).remove().catch(e=>console.warn('변경내역 초기화 실패',e));_chgShadow={};}
   closeModal();
   showToast('✅ '+nextYear+'학년도 초기화 완료 — 학생을 새로 등록하세요');
   render();
