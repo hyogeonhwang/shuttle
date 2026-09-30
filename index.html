@@ -7,7 +7,7 @@
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
 <meta name="app-version" content="15">
-<title>셔틀버스 관리시스템 v15</title>
+<title>셔틀버스 관리시스템</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <!-- Firebase SDK -->
@@ -725,7 +725,7 @@ const DB_KEY='shuttle_v4';
 // v15: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
 // v15 변경사항: 실시간 동기화 강화 (visibilitychange 자동 재로드 + 30초 주기 재동기화 + _fbIgnoreUntil 축소)
 // v16 변경사항: 변경내역을 건별 경로(shuttle_v4/changes/날짜/id)로 저장 → 삭제·수정이 되살아나는 문제 근본 해결
-const APP_VERSION = 16;
+const APP_VERSION = 17;  // v17: 탭 제목 버전표기 제거, 결석기간 중복 등록 방지
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -7070,6 +7070,17 @@ function saveChange(){
     msg+=`\n기간: ${sd} ~ ${ed}`;
   }
   if(ctype==='bus_change'&&!d.toRouteId){alert('이동할 노선을 선택하세요');return;}
+  // v17: 결석기간 겹침 확인 (채예린 9/28~10/7 + 9/30~10/7 중복 같은 경우 방지)
+  if(ctype==='period_absent'&&!d._editingId){
+    const sd=el('m_sd')?.value,ed=el('m_ed')?.value;
+    const overl=[];
+    for(const [dd,arr] of Object.entries(S.db.dailyChanges||{})){
+      for(const c of arr){
+        if(c.studentId===sid&&c.type==='period_absent'&&!c.undone&&c.startDate<=ed&&c.endDate>=sd)overl.push(`${c.startDate}~${c.endDate}`);
+      }
+    }
+    if(overl.length&&!confirm(`⚠️ [${st.name}] 이미 등록된 결석기간과 겹칩니다.\n\n기존: ${overl.join(', ')}\n신규: ${sd}~${ed}\n\n기존 건을 먼저 수정·삭제하는 것을 권장합니다.\n그래도 추가 등록하시겠습니까?`))return;
+  }
   if(!confirm(`다음 변경사항을 저장하시겠습니까?\n\n${msg}`))return;
   const chg={id:uid(),studentId:sid,routeId:ctype==='period_absent'?'all':rid,type:ctype,notes:el('m_notes')?.value||'',inputter:el('m_inputter')?.value||localStorage.getItem('shuttle_inputter')||'',timestamp:Date.now(),undone:false};
   if(ctype==='period_absent'){chg.startDate=el('m_sd')?.value;chg.endDate=el('m_ed')?.value;}
@@ -7099,7 +7110,8 @@ function saveChange(){
     if(!arr.find(c=>c.id===d._editingId))filtered.push(chg);
   } else {
     // 신규 등록: 같은 학생+노선의 기존 활성 변경 제거 후 추가
-    filtered=arr.filter(c=>!(c.studentId===sid&&c.routeId===rid&&!c.undone));
+    // v17: 결석기간은 routeId가 'all'로 저장되므로 그 기준으로, 같은 날 등록된 '겹치는' 결석기간만 교체 (기존엔 비교가 안 돼 중복 저장)
+    filtered=arr.filter(c=>!(c.studentId===sid&&c.routeId===chg.routeId&&(ctype!=='period_absent'||(c.type==='period_absent'&&c.startDate<=chg.endDate&&c.endDate>=chg.startDate))&&!c.undone));
     filtered.push(chg);
   }
   setDayChanges(saveDate,filtered);
