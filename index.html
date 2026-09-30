@@ -1,4 +1,4 @@
-<!-- v14 redeploy 2026-09-30 - save() 안전화 + snapshot 보호 -->
+<!-- v15 redeploy 2026-09-30 - 자동 재동기화 시스템 (visibilitychange + 30초 주기) -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -6,8 +6,8 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate, max-age=0">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="app-version" content="14">
-<title>셔틀버스 관리시스템 v14</title>
+<meta name="app-version" content="15">
+<title>셔틀버스 관리시스템 v15</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js"></script>
 <!-- Firebase SDK -->
@@ -72,6 +72,11 @@ function doAnonymousLogin(){
       document.getElementById('pw_screen')?.remove();
       checkAppVersion();  // v13: 버전 체크 (실패해도 앱은 계속)
       initDB();
+      // v15: 자동 재동기화 시스템 시작 (한 번만 시작)
+      if(!window.__resyncInitialized){
+        window.__resyncInitialized = true;
+        initAutoResync();
+      }
     })
     .catch(e=>{
       console.error('익명 로그인 실패:', e);
@@ -170,6 +175,124 @@ function showOutdatedVersionBanner(current, required){
       '</button>'+
     '</div>';
   document.body.appendChild(banner);
+}
+
+// ==========================================================================
+// v15: 자동 재동기화 시스템
+// ==========================================================================
+// 목적: 각 기기의 실시간 리스너가 지연/멈춤 되는 문제 해결
+// 방법:
+//   1. visibilitychange: 브라우저 탭 다시 보일 때 강제 재로드
+//   2. focus: 창 활성화 시 강제 재로드
+//   3. 30초 주기 타이머: 백그라운드에서 자동 재로드
+//   4. 온라인 복귀 감지: 네트워크 재연결 시 재로드
+// 재로드 대상: 오늘 dailyChanges + 어제 dailyChanges (실사용 데이터)
+
+window.__lastSyncAt = 0;
+
+async function forceResyncFromFirebase(reason){
+  if(!USE_FIREBASE || !_fbDb) return;
+  try {
+    const today = getTodayKey ? getTodayKey() : (function(){
+      const d = new Date();
+      return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    })();
+    
+    // 어제 날짜 계산
+    const y = new Date();
+    y.setDate(y.getDate()-1);
+    const yesterday = y.getFullYear()+'-'+String(y.getMonth()+1).padStart(2,'0')+'-'+String(y.getDate()).padStart(2,'0');
+    
+    // 오늘 강제 재로드
+    const todaySnap = await _fbDb.ref('shuttle_v4/dailyChanges/'+today).once('value');
+    const todayArr = todaySnap.val() || [];
+    S.db.dailyChanges = S.db.dailyChanges || {};
+    S.db.dailyChanges[today] = todayArr;
+    
+    // 어제도 강제 재로드
+    const ySnap = await _fbDb.ref('shuttle_v4/dailyChanges/'+yesterday).once('value');
+    const yArr = ySnap.val() || [];
+    S.db.dailyChanges[yesterday] = yArr;
+    
+    localStorage.setItem(DB_KEY, JSON.stringify(S.db));
+    
+    window.__lastSyncAt = Date.now();
+    updateSyncBadge();
+    
+    // 화면 다시 렌더
+    if(typeof render === 'function') render();
+    
+    console.log('[v15 재동기화] '+reason+' - 오늘 '+todayArr.filter(c=>!c.undone).length+'건, 어제 '+yArr.filter(c=>!c.undone).length+'건 로드됨');
+  } catch(e) {
+    console.warn('[v15 재동기화 실패]', reason, e);
+  }
+}
+
+// 동기화 시각 뱃지 업데이트
+function updateSyncBadge(){
+  try {
+    let badge = document.getElementById('sync_badge');
+    if(!badge){
+      badge = document.createElement('div');
+      badge.id = 'sync_badge';
+      badge.style.cssText = 'position:fixed;bottom:24px;right:8px;z-index:9998;background:rgba(0,0,0,0.4);color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-family:inherit;pointer-events:none;letter-spacing:0.3px';
+      document.body.appendChild(badge);
+    }
+    const elapsed = Date.now() - window.__lastSyncAt;
+    if(window.__lastSyncAt === 0){
+      badge.textContent = '🔄 대기 중';
+      badge.style.background = 'rgba(0,0,0,0.4)';
+    } else if(elapsed < 60000){
+      badge.textContent = '🔄 방금 동기화';
+      badge.style.background = 'rgba(5,150,105,0.7)';
+    } else if(elapsed < 300000){
+      badge.textContent = '🔄 '+Math.floor(elapsed/60000)+'분 전';
+      badge.style.background = 'rgba(0,0,0,0.5)';
+    } else {
+      badge.textContent = '⚠️ '+Math.floor(elapsed/60000)+'분 전';
+      badge.style.background = 'rgba(220,38,38,0.8)';
+    }
+  } catch(e){}
+}
+
+// v15: 자동 재동기화 트리거 설정
+function initAutoResync(){
+  // 1. 탭 다시 보일 때 (모바일 앱 다시 열 때 = 이게 핵심!)
+  document.addEventListener('visibilitychange', ()=>{
+    if(document.visibilityState === 'visible'){
+      console.log('[v15] 탭 활성화 감지 → 강제 재동기화');
+      forceResyncFromFirebase('visibilitychange');
+    }
+  });
+  
+  // 2. 창 포커스 시 (PC에서 탭 전환)
+  window.addEventListener('focus', ()=>{
+    // visibilitychange와 중복 방지 - 1초 이내면 skip
+    if(Date.now() - window.__lastSyncAt < 1000) return;
+    console.log('[v15] 창 포커스 감지 → 강제 재동기화');
+    forceResyncFromFirebase('focus');
+  });
+  
+  // 3. 30초 주기 자동 재동기화
+  setInterval(()=>{
+    if(document.visibilityState === 'visible'){
+      forceResyncFromFirebase('30초 주기');
+    }
+  }, 30000);
+  
+  // 4. 네트워크 온라인 복귀 감지
+  window.addEventListener('online', ()=>{
+    console.log('[v15] 네트워크 복귀 감지 → 강제 재동기화');
+    setTimeout(()=>forceResyncFromFirebase('online'), 1000);
+  });
+  
+  // 5. 뱃지 매초 업데이트
+  setInterval(updateSyncBadge, 1000);
+  
+  // 6. 최초 실행 3초 후 첫 동기화
+  setTimeout(()=>forceResyncFromFirebase('초기 로드'), 3000);
+  
+  console.log('[v15] 자동 재동기화 시스템 시작됨');
 }
 
 // 비밀번호 화면 표시
@@ -497,9 +620,9 @@ const ALL_DAYS=DAYS;
 const SCHOOL_KO={altiora:'알티오라',petamus:'페타무스',pangram:'팬그램'};
 const BUS_COLORS={'2':'#9c27b0','3':'#673ab7','5':'#1565c0','7':'#2e7d32','8':'#bf360c'};
 const DB_KEY='shuttle_v4';
-// v14: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
-// v14 변경사항: save()가 dailyChanges 건드리지 않도록 수정 + cleanupOldFirebaseSnapshots 안전화
-const APP_VERSION = 14;
+// v15: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
+// v15 변경사항: 실시간 동기화 강화 (visibilitychange 자동 재로드 + 30초 주기 재동기화 + _fbIgnoreUntil 축소)
+const APP_VERSION = 15;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -1271,7 +1394,7 @@ function save(){
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
-    _fbIgnoreUntil = Date.now() + 15000;
+    _fbIgnoreUntil = Date.now() + 3000;  // v15: 15초 → 3초 (다른 사용자 변경 무시 시간 축소)
     // v14 핵심 수정: dailyChanges와 snapshots는 절대 통째로 덮어쓰지 않음
     // - dailyChanges는 setDayChanges에서 낙관적 잠금으로 관리
     // - snapshots는 autoSnapshot에서 개별 관리
@@ -1338,7 +1461,7 @@ function setDayChanges(date,arr){
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   
   if(USE_FIREBASE && _fbDb){
-    _fbIgnoreUntil = Date.now() + 15000;
+    _fbIgnoreUntil = Date.now() + 3000;  // v15: 15초 → 3초
     
     // v13: 낙관적 잠금 - 저장 전 remote 최신 상태 fetch → merge → save
     _fbDb.ref('shuttle_v4/dailyChanges/'+date).once('value').then(remoteSnap=>{
@@ -7449,7 +7572,7 @@ function saveAndWait(){
   S.db._savedAt = Date.now();
   localStorage.setItem(DB_KEY, JSON.stringify(S.db));
   if(USE_FIREBASE && _fbRef){
-    _fbIgnoreUntil = Date.now() + 12000;
+    _fbIgnoreUntil = Date.now() + 3000;  // v15: 12초 → 3초
     // v14: dailyChanges/snapshots/integrityLog/appConfig/smsHistory 제외 update
     const dbToSave = {};
     for(const key in S.db){
