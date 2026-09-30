@@ -1,4 +1,4 @@
-<!-- v15 redeploy 2026-09-30 - 자동 재동기화 시스템 (visibilitychange + 30초 주기) -->
+<!-- v18 2026-09-30 - 변경내역 건별 저장(v16) + 시스템 오류 배너 정리(v18) -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -52,7 +52,7 @@ let _fbIgnoreUntil = 0;
 // 옛 경로(shuttle_v4/dailyChanges)는 v16부터 읽기·쓰기 안 함 (이관 원본 백업으로 보존)
 const CHG_PATH = 'shuttle_v4/changes';
 const CHG_MIGRATED_FLAG = 'shuttle_v4/appConfig/changesV16MigratedAt';
-const NON_DB_KEYS = ['dailyChanges','changes','snapshots','integrityLog','appConfig','smsHistory'];
+const NON_DB_KEYS = ['dailyChanges','changes','snapshots','integrityLog','appConfig','smsHistory','errorLog'];
 let _chgShadow = {};   // {날짜: {id: 정렬JSON}} - 마지막으로 확인된 Firebase 상태
 
 function stableStringify(v){
@@ -93,9 +93,113 @@ function chgSetShadowDate(date, arr){
 function safeLocalSave(){
   try{
     const copy = {};
-    for(const k in S.db){ if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='changes') continue; copy[k]=S.db[k]; }
+    for(const k in S.db){ if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='changes'||k==='errorLog'||k==='appConfig') continue; copy[k]=S.db[k]; }
     localStorage.setItem(DB_KEY, JSON.stringify(copy));
   }catch(e){ console.warn('[v16] localStorage 저장 실패(무시):', e && e.message); }
+}
+
+
+// ==========================================================================
+// v18: 저장 실패 기록 → 모든 기기에 빨간 배너 (관리자 비번으로 처리하면 전체 해제)
+// ==========================================================================
+const FAIL_Q_KEY = 'shuttle_fail_queue';
+function _devLabel(){
+  const ua = navigator.userAgent||'';
+  if(/iPhone|iPad/.test(ua)) return 'iPhone';
+  if(/Android/.test(ua)) return 'Android';
+  if(/Windows/.test(ua)) return 'PC(Windows)';
+  if(/Mac/.test(ua)) return 'Mac';
+  return '기타기기';
+}
+function _dateOfTs(ts){ const d=new Date(ts); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function recordSaveFailure(what, err){
+  try{
+    const item = { at: Date.now(), what: String(what||''), err: String((err&&err.message)||err||'').slice(0,150),
+      who: (function(){ try{ return localStorage.getItem('shuttle_inputter')||''; }catch(e){ return ''; } })(), dev: _devLabel() };
+    let q = [];
+    try{ q = JSON.parse(localStorage.getItem(FAIL_Q_KEY)||'[]'); }catch(e){}
+    q.push(item);
+    try{ localStorage.setItem(FAIL_Q_KEY, JSON.stringify(q.slice(-30))); }catch(e){ window.__failMemQ = (window.__failMemQ||[]).concat([item]); }
+    console.warn('[v18 저장실패 기록]', item);
+    setTimeout(flushSaveFailures, 500);
+  }catch(e){}
+}
+function flushSaveFailures(){
+  try{
+    if(!USE_FIREBASE || !_fbDb) return;
+    let q = [];
+    try{ q = JSON.parse(localStorage.getItem(FAIL_Q_KEY)||'[]'); }catch(e){}
+    q = q.concat(window.__failMemQ||[]);
+    if(!q.length) return;
+    const up = {};
+    q.forEach(it=>{ up[_dateOfTs(it.at)+'/f'+it.at+'_'+(it.dev||'x').replace(/[^A-Za-z0-9]/g,'')] = it; });
+    _fbDb.ref(DB_KEY+'/errorLog').update(up).then(()=>{
+      try{ localStorage.removeItem(FAIL_Q_KEY); }catch(e){}
+      window.__failMemQ = [];
+    }).catch(e=>console.warn('[v18] 저장실패 기록 전송 보류(다음에 재시도):', e&&e.message));
+  }catch(e){}
+}
+function watchSaveFailures(){
+  try{
+    const t = todayStr();
+    let fails = {}, ackAt = 0;
+    const draw = ()=>{
+      const list = Object.values(fails).filter(f=>f&&f.at>ackAt).sort((a,b)=>a.at-b.at);
+      let bar = document.getElementById('savefail_banner');
+      if(!list.length){ if(bar) bar.remove(); return; }
+      if(!bar){ bar = document.createElement('div'); bar.id = 'savefail_banner'; document.body.appendChild(bar); }
+      bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99997;background:#dc2626;color:#fff;padding:12px 16px 14px;font-size:13px;font-weight:800;text-align:center;box-shadow:0 -4px 16px rgba(0,0,0,0.3)';
+      const rows = list.slice(-5).map(f=>'• '+new Date(f.at).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false})+' '+esc(f.who?f.who+' 선생님':'')+' ('+esc(f.dev||'')+') · '+esc(f.what||'')).join('<br>');
+      bar.innerHTML = '🚨 저장 실패 발생 ('+list.length+'건) — 해당 내용이 서버에 저장되지 않았을 수 있습니다'+
+        '<div style="font-size:12px;font-weight:600;margin-top:6px;line-height:1.5">'+rows+'</div>'+
+        '<div style="font-size:11px;font-weight:600;opacity:.95;margin-top:6px">▪ 해당 선생님은 앱을 새로고침 후 변경내역에 등록됐는지 확인·재등록 ▪ 원장님께 톡방 공유</div>'+
+        '<button onclick="handleSaveFailAck()" style="margin-top:8px;background:#fff;color:#dc2626;border:none;border-radius:6px;padding:5px 14px;font-size:12px;font-weight:800;cursor:pointer">✔ 관리자 처리 완료</button>';
+    };
+    _fbDb.ref(DB_KEY+'/errorLog/'+t).on('value', sn=>{ fails = sn.val()||{}; draw(); });
+    _fbDb.ref(DB_KEY+'/integrityLog/'+t+'/saveFailAckedAt').on('value', sn=>{ ackAt = sn.val()||0; draw(); });
+  }catch(e){ console.warn('[v18] 저장실패 감시 시작 실패', e); }
+}
+function handleSaveFailAck(){
+  const pw = prompt('관리자 비밀번호를 입력하세요:\n(원장님만 처리 가능합니다)');
+  if(pw===null) return;
+  if(pw!==S.db.settings?.adminPw){ showToast('❌ 비밀번호가 틀렸습니다'); return; }
+  _fbDb.ref(DB_KEY+'/integrityLog/'+todayStr()).update({ saveFailAckedAt: Date.now() })
+    .then(()=>showToast('✅ 처리 완료 - 모든 기기에서 배너가 사라집니다'))
+    .catch(e=>showToast('❌ 처리 실패: '+e.message));
+}
+// 30일 지난 저장실패 기록 정리
+function cleanupOldErrorLog(){
+  try{
+    _fbDb.ref(DB_KEY+'/errorLog').once('value').then(sn=>{
+      const all = sn.val()||{}; const now = Date.now();
+      Object.keys(all).forEach(d=>{ if(now - new Date(d+'T00:00:00').getTime() > 30*24*60*60*1000) _fbDb.ref(DB_KEY+'/errorLog/'+d).remove(); });
+    }).catch(()=>{});
+  }catch(e){}
+}
+// 정상 검증 표시 (초록 배너 대신 우측 하단 작은 표시)
+function showVerifyBadge(){
+  try{
+    let b = document.getElementById('verify_badge');
+    if(!b){ b = document.createElement('div'); b.id = 'verify_badge'; document.body.appendChild(b); }
+    b.style.cssText = 'position:fixed;bottom:42px;right:8px;z-index:9998;background:rgba(5,150,105,0.75);color:#fff;padding:2px 7px;border-radius:10px;font-size:10px;font-family:inherit;pointer-events:none;letter-spacing:0.3px';
+    b.textContent = '✅ 검증';
+  }catch(e){}
+}
+// 백업 복구 시 변경내역도 서버에 복원 (백업의 dailyChanges → 새 경로 전체 교체)
+function restoreChangesFromBackup(daily){
+  if(!USE_FIREBASE || !_fbDb || window.__blockWrites) return Promise.resolve();
+  const tree = {};
+  for(const [d,node] of Object.entries(daily||{})){
+    const arr = Array.isArray(node) ? node : Object.values(node||{});
+    arr.forEach((c,i)=>{
+      if(!c || typeof c!=='object') return;
+      const id = c.id || ('m'+d.replace(/-/g,'')+'_'+i);
+      tree[d] = tree[d] || {};
+      tree[d][id] = cleanChg({...c, id});
+    });
+  }
+  if(!Object.keys(tree).length){ console.warn('[v18 복구] 백업에 변경내역이 없어 현재 변경내역은 그대로 둠'); return Promise.resolve(); }
+  return _fbDb.ref(CHG_PATH).set(tree).then(()=>{ chgRebuildShadow(tree); console.log('[v18 복구] 변경내역 복원 완료'); });
 }
 
 // 최초 로드 시: 옛 구조 → 새 구조 1회 이관 + S.db.dailyChanges 구성
@@ -103,7 +207,7 @@ async function v16PrepareChanges(){
   let tree = S.db.changes || {};
   const oldDaily = S.db.dailyChanges || {};
   // 관리용 노드는 메모리에서 제거 (백업 안에 백업이 중첩되는 문제 방지)
-  delete S.db.changes; delete S.db.snapshots; delete S.db.integrityLog; delete S.db.smsHistory; delete S.db.appConfig;
+  delete S.db.changes; delete S.db.snapshots; delete S.db.integrityLog; delete S.db.smsHistory; delete S.db.appConfig; delete S.db.errorLog;
   let migrated = null;
   try{ migrated = (await _fbDb.ref(CHG_MIGRATED_FLAG).once('value')).val(); }catch(e){ console.warn('[v16] 이관 플래그 확인 실패', e); }
   window.__v16MigratedAt = migrated || Date.now();
@@ -324,9 +428,9 @@ async function forceResyncFromFirebase(reason){
     // 화면 다시 렌더
     if(typeof render === 'function') render();
     
-    console.log('[v15 재동기화] '+reason+' - 오늘 '+todayArr.filter(c=>!c.undone).length+'건, 어제 '+yArr.filter(c=>!c.undone).length+'건 로드됨');
+    console.log('[재동기화] '+reason+' - 오늘 '+todayArr.filter(c=>!c.undone).length+'건, 어제 '+yArr.filter(c=>!c.undone).length+'건 로드됨');
   } catch(e) {
-    console.warn('[v15 재동기화 실패]', reason, e);
+    console.warn('[재동기화 실패]', reason, e);
   }
 }
 
@@ -362,7 +466,7 @@ function initAutoResync(){
   // 1. 탭 다시 보일 때 (모바일 앱 다시 열 때 = 이게 핵심!)
   document.addEventListener('visibilitychange', ()=>{
     if(document.visibilityState === 'visible'){
-      console.log('[v15] 탭 활성화 감지 → 강제 재동기화');
+      console.log('[재동기화] 탭 활성화 감지 → 강제 재동기화');
       forceResyncFromFirebase('visibilitychange');
     }
   });
@@ -371,7 +475,7 @@ function initAutoResync(){
   window.addEventListener('focus', ()=>{
     // visibilitychange와 중복 방지 - 1초 이내면 skip
     if(Date.now() - window.__lastSyncAt < 1000) return;
-    console.log('[v15] 창 포커스 감지 → 강제 재동기화');
+    console.log('[재동기화] 창 포커스 감지 → 강제 재동기화');
     forceResyncFromFirebase('focus');
   });
   
@@ -384,7 +488,7 @@ function initAutoResync(){
   
   // 4. 네트워크 온라인 복귀 감지
   window.addEventListener('online', ()=>{
-    console.log('[v15] 네트워크 복귀 감지 → 강제 재동기화');
+    console.log('[재동기화] 네트워크 복귀 감지 → 강제 재동기화');
     setTimeout(()=>forceResyncFromFirebase('online'), 1000);
   });
   
@@ -394,7 +498,7 @@ function initAutoResync(){
   // 6. 최초 실행 3초 후 첫 동기화
   setTimeout(()=>forceResyncFromFirebase('초기 로드'), 3000);
   
-  console.log('[v15] 자동 재동기화 시스템 시작됨');
+  console.log('[재동기화] 자동 재동기화 시스템 시작됨');
 }
 
 // 비밀번호 화면 표시
@@ -725,7 +829,9 @@ const DB_KEY='shuttle_v4';
 // v15: 앱 버전 - 배포할 때마다 1씩 증가. Firebase의 shuttle_v4/appConfig/minVersion이 이 값보다 크면 쓰기 차단.
 // v15 변경사항: 실시간 동기화 강화 (visibilitychange 자동 재로드 + 30초 주기 재동기화 + _fbIgnoreUntil 축소)
 // v16 변경사항: 변경내역을 건별 경로(shuttle_v4/changes/날짜/id)로 저장 → 삭제·수정이 되살아나는 문제 근본 해결
-const APP_VERSION = 17;  // v17: 탭 제목 버전표기 제거, 결석기간 중복 등록 방지
+// v17: 탭 제목 버전표기 제거, 결석기간 중복 등록 방지
+// v18: 빨간 배너는 시스템 오류만(백업 누락·저장 실패·학생 급감), 초록 배너 → 작은 ✅검증 표시, 백업 복구 시 변경내역 포함
+const APP_VERSION = 18;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -1175,6 +1281,9 @@ function initDB(){
       render();
 
       window.__v16Ready = true;
+      // v18: 저장실패 감시·전송, 오래된 기록 정리
+      watchSaveFailures(); flushSaveFailures(); cleanupOldErrorLog();
+      window.addEventListener('online', ()=>setTimeout(flushSaveFailures, 1500));
 
       // v16: 변경내역 실시간 리스닝 (새 경로, 건별 저장)
       // - _fbIgnoreUntil로 무시하지 않음 (예전엔 저장 직후 3~15초간 들어온 다른 기기 변경을 통째로 버렸음)
@@ -1254,7 +1363,7 @@ function initDB(){
       const stuRef=_fbDb.ref('shuttle_v4/students');
       stuRef.on('value', snap=>{
         if(!stuListenerReady){stuListenerReady=true;return;}
-        if(Date.now() < _fbIgnoreUntil) return;
+        // v18: 저장 직후 3초 무시 제거 (다른 기기 학생정보 변경을 버리지 않음)
         const newStus=snap.val();
         if(!newStus) return;
         const prevJson=JSON.stringify(S.db.students||[]);
@@ -1551,6 +1660,7 @@ function save(){
       })
       .catch(e=>{
         console.warn('Firebase 저장 실패:', e);
+        recordSaveFailure('학생·노선·설정 저장', e);
         _fbSaveFailed = true;
         let warn = document.getElementById('fb_save_warn');
         if(!warn){
@@ -1612,11 +1722,13 @@ function setDayChanges(date,arr){
   chgSetShadowDate(date, arr);
   console.log('[v16 저장] '+date+': '+Object.values(updates).filter(v=>v).length+'건 쓰기, '+Object.values(updates).filter(v=>!v).length+'건 삭제');
   _fbDb.ref(CHG_PATH).update(updates).then(()=>{
+    flushSaveFailures();
     _fbSaveFailed = false;
     const warn = document.getElementById('fb_save_warn');
     if(warn) warn.style.display = 'none';
   }).catch(e=>{
     console.warn('변경내역 저장 실패:', e);
+    recordSaveFailure('변경내역 저장 ('+date+')', e);
     _fbSaveFailed = true;
     let warn = document.getElementById('fb_save_warn');
     if(!warn){
@@ -4659,7 +4771,7 @@ function updateClass(school,idx,val){
 
 function buildSettingsSystem(){
   const year=new Date().getFullYear();
-  const today=new Date().toISOString().slice(0,10);
+  const today=todayStr();  // v18: 한국시간 기준
   // localStorage 스냅샷 목록
   const snapshots=[];
   for(let i=0;i<localStorage.length;i++){
@@ -4688,7 +4800,7 @@ function buildSettingsSystem(){
       <span style="font-size:18px">🛡️</span>
       <div>
         <div style="font-size:13px;font-weight:900;color:#166534">자동 스냅샷 복구</div>
-        <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 Firebase(☁️) + 브라우저(📱)에 자동 저장. 최근 7일치.</div>
+        <div style="font-size:11px;color:#6b7280;margin-top:1px">매일 첫 접속 시 자동 저장 · ☁️ Firebase 30일 보관 · 📱 이 브라우저 7일 보관</div>
       </div>
     </div>
     <span id="snap_arrow" style="font-size:11px;color:#166534">▼</span>
@@ -6407,7 +6519,7 @@ function el(id){return document.getElementById(id)}
 function loadFirebaseSnapshots(){
   const listEl = document.getElementById('fb_snap_list');
   if(!listEl) return;
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayStr();  // v18: 한국시간 기준
   try{
     firebase.database().ref(DB_KEY+'/snapshots').once('value').then(snap=>{
       const all = snap.val() || {};
@@ -6459,9 +6571,13 @@ function restoreFirebaseSnapshot(date){
         return;
       }
       S.db = backup.data;
+      for(const k of ['snapshots','integrityLog','smsHistory','appConfig','changes','errorLog']) delete S.db[k];
       save();
-      showToast('✅ '+date+' Firebase 백업으로 복구 완료');
-      setTimeout(()=>{location.reload();}, 1500);
+      // v18: 변경내역도 백업 시점으로 복원
+      restoreChangesFromBackup(backup.data.dailyChanges).catch(e=>showToast('⚠️ 변경내역 복원 실패: '+e.message)).then(()=>{
+        showToast('✅ '+date+' Firebase 백업으로 복구 완료');
+        setTimeout(()=>{location.reload();}, 1500);
+      });
     }).catch(e=>{
       showToast('❌ 복구 실패: '+e.message);
     });
@@ -6479,7 +6595,9 @@ function restoreSnapshot(date){
     const data=localStorage.getItem('shuttle_snapshot_'+date);
     if(!data){showToast('❌ 스냅샷 데이터가 없습니다');return;}
     S.db=JSON.parse(data);
+    for(const k of ['snapshots','integrityLog','smsHistory','appConfig','changes','errorLog']) delete S.db[k];
     save();
+    restoreChangesFromBackup(S.db.dailyChanges).catch(e=>showToast('⚠️ 변경내역 복원 실패: '+e.message));  // v18
     showToast('✅ '+date+' 스냅샷으로 복구 완료');
     render();
   }catch(e){showToast('❌ 복구 실패: '+e.message);}
@@ -6524,13 +6642,14 @@ function autoSnapshot(){
         teacherCount: (S.db.teachers||[]).length,
         dailyChangesCount: Object.keys(S.db.dailyChanges||{}).length,
         // v16: 백업 안에 백업/로그가 중첩 저장되지 않도록 제외 (변경내역 dailyChanges는 포함)
-        data: (()=>{const d={};for(const k in S.db){if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='appConfig'||k==='changes')continue;d[k]=S.db[k];}return JSON.parse(JSON.stringify(d));})()
+        data: (()=>{const d={};for(const k in S.db){if(k==='snapshots'||k==='integrityLog'||k==='smsHistory'||k==='appConfig'||k==='changes'||k==='errorLog')continue;d[k]=S.db[k];}return JSON.parse(JSON.stringify(d));})()
       };
       snapRef.set(backupData).then(()=>{
         console.log('✅ Firebase 스냅샷 저장 완료:', dateStr);
         cleanupOldFirebaseSnapshots();
       }).catch(e=>{
         console.error('❌ Firebase 스냅샷 저장 실패:', e);
+        recordSaveFailure('자동 백업', e);
         showSnapshotErrorBanner(e.message);
       });
     }).catch(e=>{
@@ -6598,41 +6717,47 @@ function runIntegrityCheck(){
     const currentActive = (S.db.students||[]).filter(s=>s&&s.active).length;
     const yesterdayChgs = ((S.db.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
 
-    // 1단계: 어제 백업 조회 + issues 계산 (배너는 아직 표시 X)
-    firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value').then(snap=>{
+    // 1단계: 어제 백업 + 어제 사용 여부 조회 → 시스템 오류만 issues로 (v18)
+    Promise.all([
+      firebase.database().ref(DB_KEY+'/snapshots/'+yStr).once('value'),
+      firebase.database().ref(DB_KEY+'/integrityLog/'+yStr).once('value').catch(()=>null)
+    ]).then(([snap, ylogSnap])=>{
       const backup = snap.val();
+      const ylog = ylogSnap ? ylogSnap.val() : null;
       const issues = [];
       let backupOk = false;
       let yesterdayActive = null;
+      let changeNote = null;
+      // 어제 앱을 실제로 썼는지: 어제 등록된 변경이 있거나, 어제 누군가 접속해서 검증 기록이 남았으면 사용한 날
+      const usedYesterday = ((S.db.dailyChanges||{})[yStr]||[]).length>0 || !!(ylog && ylog.checkedAt);
 
       if(backup && backup.data){
         backupOk = true;
-        yesterdayActive = backup.activeStudentCount;
+        yesterdayActive = backup.activeStudentCount ?? null;
         if(yesterdayActive && currentActive < yesterdayActive * 0.9){
           issues.push({type:'student_drop', msg:'학생 수 급감: '+yesterdayActive+'명 → '+currentActive+'명'});
         }
-        const backupYChgs = ((backup.data.dailyChanges||{})[yStr]||[]).filter(c=>!c.undone).length;
-        if(backupYChgs > yesterdayChgs + 3){
-          issues.push({type:'change_loss', msg:'어제 변경 '+backupYChgs+'건 → '+yesterdayChgs+'건 (감소)'});
-        }
-      } else {
-        issues.push({type:'no_backup', msg:'어제('+yStr+') 자동 백업 없음'});
+        // 변경건수 비교는 배너 없이 기록만 (v18)
+        const bk = (backup.data.dailyChanges||{})[yStr]||[];
+        const backupYChgs = (Array.isArray(bk)?bk:Object.values(bk)).filter(c=>c&&!c.undone).length;
+        if(backupYChgs > yesterdayChgs + 3) changeNote = '어제 변경 백업시점 '+backupYChgs+'건 → 현재 '+yesterdayChgs+'건';
+      } else if(usedYesterday){
+        issues.push({type:'no_backup', msg:'어제('+yStr+') 앱을 사용했는데 자동 백업이 저장되지 않았습니다'});
       }
 
       // 2단계: 검증 결과를 Firebase에 기록 (ackedAt은 건드리지 않음)
       try{
         firebase.database().ref(DB_KEY+'/integrityLog/'+tStr).update({
           checkedAt: Date.now(),
-          currentActive, yesterdayActive, yesterdayChgs, backupOk,
+          currentActive, yesterdayActive: yesterdayActive ?? null, yesterdayChgs, backupOk, usedYesterday,
+          changeNote: changeNote,
           issues: issues.length>0 ? issues.map(i=>i.msg) : null
         }).catch(e=>console.warn('검증 로그 저장 실패:',e));
       }catch(e){}
 
-      // 3단계: 정상이면 초록 배너 한 번만 (실시간 리스너 불필요)
+      // 3단계: 정상이면 배너 없이 우측 하단 작은 ✅ 표시만 (v18)
       if(issues.length===0){
-        showIntegrityBanner({
-          ok: true, issues, currentActive, yesterdayActive, yesterdayChgs, backupOk
-        });
+        showVerifyBadge();
         return;
       }
 
@@ -6686,7 +6811,7 @@ function showIntegrityBanner(r){
   } else {
     // 이슈 유형별 안내 문구
     const guides = {
-      no_backup: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">▪ 오늘 첫 배포이거나 어제가 휴원일이면 정상<br>▪ 어제 앱 사용했는데 이 알림이 뜨면 <b>원장님 문의 필요</b></div>',
+      no_backup: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">▪ 휴원일(앱 미사용일)은 검사하지 않으므로 실제 백업 실패입니다<br>▪ <b>원장님께 톡방 공유</b> · 설정 > 시스템에서 수동 백업 권장</div>',
       student_drop: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">⚠️ 심각 - <b>즉시 원장님께 톡방 공유하세요</b><br>⚠️ 데이터 손실 가능성 있음</div>',
       change_loss: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">⚠️ 심각 - <b>즉시 원장님께 톡방 공유하세요</b><br>⚠️ 어제 등록한 변경사항이 사라진 것 같습니다</div>',
       firebase_error: '<div style="font-size:11px;opacity:0.95;margin-top:6px;text-align:left;max-width:600px;margin-left:auto;margin-right:auto">▪ 잠시 후 새로고침 시도<br>▪ 반복되면 원장님 문의 필요</div>'
@@ -7728,6 +7853,7 @@ function saveAndWait(){
       })
       .catch(e=>{
         console.error('[saveAndWait] Firebase 저장 실패:', e);
+        recordSaveFailure('학생·노선·설정 저장', e);
         showToast('❌ 서버 저장 실패 — 재시도하거나 관리자에게 문의하세요');
         throw e;
       });
@@ -8197,7 +8323,7 @@ function exportData(){
   a.download='shuttle_backup_'+todayStr()+'.json';
   a.click();
 }
-function importData(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{try{S.db=JSON.parse(e.target.result);save();showToast('✅ 데이터 불러오기 완료');render();}catch(err){showToast('❌ 파일 형식 오류 — JSON 파일인지 확인하세요');}};r.readAsText(f);}
+function importData(input){const f=input.files[0];if(!f)return;const r=new FileReader();r.onload=e=>{try{S.db=JSON.parse(e.target.result);for(const k of ['snapshots','integrityLog','smsHistory','appConfig','changes','errorLog'])delete S.db[k];S.db.dailyChanges=S.db.dailyChanges||{};save();restoreChangesFromBackup(S.db.dailyChanges).catch(er=>showToast('⚠️ 변경내역 복원 실패: '+er.message));showToast('✅ 데이터 불러오기 완료');render();}catch(err){showToast('❌ 파일 형식 오류 — JSON 파일인지 확인하세요');}};r.readAsText(f);}
 function resetData(){
   // 팝업 경고창
   S.modal={type:'confirmReset',data:{mode:'full'}};render();
@@ -8723,7 +8849,7 @@ setTimeout(function(){
       window.__resyncInitialized = true;
       initAutoResync();
     }
-  } catch(e){ console.warn('[v15] 재동기화 시작 실패:', e); }
+  } catch(e){ console.warn('[재동기화] 시작 실패:', e); }
 }, 2000);
 </script>
 </body>
