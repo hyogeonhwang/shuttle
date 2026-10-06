@@ -1,4 +1,4 @@
-<!-- v18 2026-09-30 - 변경내역 건별 저장(v16) + 시스템 오류 배너 정리(v18) -->
+<!-- v19 2026-10-06 - 변경내역 건별 저장(v16) + 시스템 오류 배너(v18) + 차량정보 설정값 반영(v19) -->
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -831,7 +831,8 @@ const DB_KEY='shuttle_v4';
 // v16 변경사항: 변경내역을 건별 경로(shuttle_v4/changes/날짜/id)로 저장 → 삭제·수정이 되살아나는 문제 근본 해결
 // v17: 탭 제목 버전표기 제거, 결석기간 중복 등록 방지
 // v18: 빨간 배너는 시스템 오류만(백업 누락·저장 실패·학생 급감), 초록 배너 → 작은 ✅검증 표시, 백업 복구 시 변경내역 포함
-const APP_VERSION = 18;
+// v19: 차량 정보(기사·전화·차량번호·인승·호차명)를 모든 화면이 설정 저장값 기준으로 표시 + 다른 기기 실시간 반영
+const APP_VERSION = 19;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -1373,6 +1374,19 @@ function initDB(){
         safeLocalSave();
         render();
         showChangeBanner();
+      });
+
+      // v19: 차량 정보 실시간 리스닝 (설정에서 기사 교체 시 다른 기기에도 즉시 반영)
+      let busListenerReady=false;
+      _fbDb.ref('shuttle_v4/buses').on('value', snap=>{
+        if(!busListenerReady){busListenerReady=true;return;}
+        const nb=snap.val();
+        if(!nb) return;
+        const arr=Array.isArray(nb)?nb.filter(Boolean):Object.values(nb).filter(Boolean);
+        if(JSON.stringify(S.db.buses||[])===JSON.stringify(arr)) return;
+        S.db.buses=arr;
+        safeLocalSave();
+        if(!S._editBus) render();  // 차량 수정 입력 중이면 화면 유지
       });
     }).catch(e=>{
       console.warn('Firebase 로드 실패, localStorage 사용:', e);
@@ -3454,6 +3468,8 @@ function buildSingleRouteCard(rid,date,dk,wd){
 }
 
 function buildBusCard(bus,date,dk,wd){
+  // v19: 코드 고정값(INIT_BUSES) 대신 설정에 저장된 차량 정보 우선 (기사 교체 등 즉시 반영)
+  bus={...bus,...(getBus(bus.id)||{})};
   const col=BUS_COLORS[bus.id]||'var(--pr)';
   const sfil=S.schoolFilter;
   const busRoutes=getBusRoutes(bus.id).filter(r=>routeActiveOnDay(r,dk));
@@ -3581,7 +3597,7 @@ function buildRoutes(date,dk){
     <span class="card-t">🗺 노선 관리</span>
     <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
       <select style="border:1.5px solid var(--border);border-radius:6px;padding:5px 9px;font-size:12px;font-family:inherit;outline:none" onchange="S.routeFilter.busId=this.value;render()">
-        ${INIT_BUSES.map(b=>`<option value="${b.id}" ${busId===b.id?'selected':''}>${b.name}</option>`).join('')}
+        ${INIT_BUSES.map(b=>`<option value="${b.id}" ${busId===b.id?'selected':''}>${getBusName(b.id)}</option>`).join('')}
       </select>
       <button class="btn btn-sec btn-xs" onclick="toggleAllRoutesOpen('${busId}')">
         ${allOpen?'▲ 모두 접기':'▼ 모두 펼치기'}
@@ -4079,7 +4095,7 @@ function buildSettingsStops(){
 <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
   <select style="border:1.5px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit"
     onchange="S._stopsBus=this.value;S._stopsRoute='';S._pendingStops=[];S._stopEdits={};render()">
-    ${INIT_BUSES.map(b=>`<option value="${b.id}" ${b.id===selBus?'selected':''}>${b.name}</option>`).join('')}
+    ${INIT_BUSES.map(b=>`<option value="${b.id}" ${b.id===selBus?'selected':''}>${getBusName(b.id)}</option>`).join('')}
   </select>
   <select style="flex:1;min-width:180px;border:1.5px solid var(--border);border-radius:7px;padding:6px 10px;font-size:12px;font-family:inherit"
     onchange="S._stopsRoute=this.value;S._pendingStops=[];S._stopEdits={};render()">
@@ -4366,7 +4382,7 @@ ${INIT_BUSES.map(b=>{
   const busRoutes=getBusRoutes(b.id).filter(r=>!hidden.includes(r.id));
   return `<div style="border:2px solid ${col}33;border-radius:10px;margin-bottom:14px;overflow:hidden">
     <div style="background:${col}11;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid ${col}22">
-      <div style="font-size:13px;font-weight:900;color:${col}">${b.name}
+      <div style="font-size:13px;font-weight:900;color:${col}">${getBusName(b.id)}
         <span style="font-size:11px;color:#9ca3af;font-weight:400;margin-left:6px">기사: ${getBus(b.id)?.driver||b.driver}</span>
       </div>
       <button class="btn btn-pr btn-xs" onclick="openAddRouteModal('${b.id}')">✚ 노선추가</button>
