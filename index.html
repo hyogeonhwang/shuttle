@@ -868,7 +868,8 @@ const DB_KEY='shuttle_v4';
 // v17: 탭 제목 버전표기 제거, 결석기간 중복 등록 방지
 // v18: 빨간 배너는 시스템 오류만(백업 누락·저장 실패·학생 급감), 초록 배너 → 작은 ✅검증 표시, 백업 복구 시 변경내역 포함
 // v19: 차량 정보(기사·전화·차량번호·인승·호차명)를 모든 화면이 설정 저장값 기준으로 표시 + 다른 기기 실시간 반영
-const APP_VERSION = 20;
+// v21: 모바일 상단 날짜 누르면 달력 팝업 (카톡 브라우저 대응), 달력 열린 동안 화면 새로그리기 보류
+const APP_VERSION = 21;
 window.__blockWrites = false;  // 오래된 버전 감지 시 true로 설정, 모든 Firebase 쓰기 차단
 const SMS_CONFIG = {
   functionUrl: "https://asia-northeast3-altiora-shuttle.cloudfunctions.net/sendShuttleSMS",
@@ -2058,7 +2059,26 @@ function countTodayChanges(date){
 // ══════════════════════════════════════════════════════
 // RENDER
 // ══════════════════════════════════════════════════════
+
+// v21: 모바일 상단 날짜 → 달력 팝업 직접 열기 (카톡 브라우저는 투명 날짜칸 터치로 달력을 안 띄움)
+function openMobDatePicker(){
+  const i=document.getElementById('main_date_inp'); if(!i) return;
+  window.__datePickerOpenAt=Date.now();
+  try{ if(typeof i.showPicker==='function'){ i.showPicker(); return; } }catch(e){ console.warn('[v21] showPicker 실패 → 대체 방식', e&&e.message); }
+  // 대체: 날짜칸을 잠깐 터치 가능하게 하고 직접 열기
+  i.style.pointerEvents='auto'; i.style.opacity='0.01';
+  try{ i.focus(); i.click(); }catch(e){}
+}
+// 달력이 열린 동안 다른 곳을 누르면(=달력 닫힘) 보류 해제
+document.addEventListener('pointerdown', e=>{
+  if(window.__datePickerOpenAt && !(e.target && e.target.closest && e.target.closest('[onclick="openMobDatePicker()"]'))) window.__datePickerOpenAt=0;
+}, true);
 function render(){
+  // v21: 날짜 달력이 열려 있으면 최대 20초까지 새로그리기 보류 (열린 달력이 사라지지 않게)
+  if(window.__datePickerOpenAt && Date.now()-window.__datePickerOpenAt<20000){
+    if(!window.__deferredRenderT) window.__deferredRenderT=setTimeout(()=>{window.__deferredRenderT=null;render();},1000);
+    return;
+  }
   // 모달 스크롤 위치 보존
   const modalEl=document.querySelector('.modal');
   const overlayEl=document.querySelector('.overlay');
@@ -2179,15 +2199,15 @@ function buildApp(){
   <div style="display:flex;align-items:center;gap:4px;flex:1;justify-content:center;margin:0 6px">
     <button onclick="(function(){var p=S.date||todayStr();var d=new Date(p+'T12:00:00');d.setDate(d.getDate()-1);var y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),dd=String(d.getDate()).padStart(2,'0');var s=y+'-'+m+'-'+dd;S.date=s;S._pendingDate=null;S.lastChange=null;render();showToast('📅 '+fmtDate(s)+' ('+DAY_KO[getDK(s)]+'요일) 조회');})()"
       style="border:none;background:rgba(255,255,255,.18);color:#fff;border-radius:6px;padding:5px 10px;cursor:pointer;font-size:15px;font-weight:900;font-family:inherit;line-height:1;flex-shrink:0">‹</button>
-    <label style="position:relative;flex:1;max-width:130px;cursor:pointer">
+    <div onclick="openMobDatePicker()" style="position:relative;flex:1;max-width:130px;cursor:pointer">
       <span style="display:block;background:rgba(255,255,255,.18);color:#fff;border-radius:8px;padding:5px 8px;font-size:13px;font-family:inherit;font-weight:700;text-align:center;pointer-events:none">
         ${date?date.slice(0,4)+'. '+String(parseInt(date.slice(5,7)))+'. '+String(parseInt(date.slice(8,10))):todayStr()}
       </span>
-      <input type="date" value="${date||todayStr()}" id="main_date_inp"
-        onkeydown="if(event.key==='Enter'){var v=document.getElementById('main_date_inp').value;if(v&&v!==S.date){S.date=v;S.lastChange=null;render();}}"
-        onchange="var v=this.value;if(v&&v!==S.date){S.date=v;S.lastChange=null;render();}"
-        style="position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer;border:none;padding:0;margin:0">
-    </label>
+      <input type="date" value="${date||todayStr()}" id="main_date_inp" tabindex="-1"
+        onchange="window.__datePickerOpenAt=0;var v=this.value;if(v&&v!==S.date){S.date=v;S.lastChange=null;render();}"
+        onblur="window.__datePickerOpenAt=0"
+        style="position:absolute;left:0;bottom:0;width:100%;height:100%;opacity:0;pointer-events:none;border:none;padding:0;margin:0">
+    </div>
     <button onclick="(function(){var v=document.getElementById('main_date_inp').value||S.date||todayStr();if(v!==S.date){S.date=v;S.lastChange=null;}render();showToast('📅 '+fmtDate(S.date)+' ('+DAY_KO[getDK(S.date)]+'요일) 조회');})()"
       style="border:none;background:rgba(255,255,255,.25);color:#fff;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:11px;font-weight:800;font-family:inherit;flex-shrink:0">조회</button>
     <span style="font-size:11px;font-weight:700;opacity:.9;flex-shrink:0">${dn}요일${chgCnt>0?` 🔔${chgCnt}`:''}</span>
